@@ -123,9 +123,11 @@ void i2s_set_samplerate_bits_sample(int samplerate, int bits_sample)
 {
     i2s_trx_stop();
     /* 如果需要更新声道或时钟配置,需要在更新前先禁用通道 */
-    my_std_cfg.slot_cfg.ws_width = bits_sample;        /* 位宽 */
+    my_std_cfg.slot_cfg.data_bit_width = bits_sample;    /* 数据位宽(必须同步!) */
+    my_std_cfg.slot_cfg.slot_bit_width = bits_sample;    /* 槽位宽(必须同步!) */
+    my_std_cfg.slot_cfg.ws_width = bits_sample;          /* WS信号位宽 */
     ESP_ERROR_CHECK(i2s_channel_reconfig_std_slot(tx_handle, &my_std_cfg.slot_cfg));
-    my_std_cfg.clk_cfg.sample_rate_hz = samplerate;    /* 设置采样率 */
+    my_std_cfg.clk_cfg.sample_rate_hz = samplerate;      /* 设置采样率 */
     ESP_ERROR_CHECK(i2s_channel_reconfig_std_clock(tx_handle, &my_std_cfg.clk_cfg));
 }
 

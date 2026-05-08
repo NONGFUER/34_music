@@ -109,12 +109,12 @@ uint8_t es8388_init(void)
 
     ret_val |= es8388_write_reg(0x09, 0x88);    /* ADC L/R PGA增益配置为+24dB */
     ret_val |= es8388_write_reg(0x0C, 0x4C);    /* ADC数据选择为left data = left ADC, right data = left ADC  音频数据为16bit */
-    ret_val |= es8388_write_reg(0x0D, 0x02);    /* ADC配置 MCLK/采样率=256 */
+    ret_val |= es8388_write_reg(0x0D, 0x01);    /* ADC配置 MCLK/采样率=384(必须与I2S_MCLK_MULTIPLE=384匹配) */
     ret_val |= es8388_write_reg(0x10, 0x00);    /* ADC数字音量控制将信号衰减 L  设置为最小！！！ */
     ret_val |= es8388_write_reg(0x11, 0x00);    /* ADC数字音量控制将信号衰减 R  设置为最小！！！ */
 
     ret_val |= es8388_write_reg(0x17, 0x18);    /* DAC音频数据为16bit */
-    ret_val |= es8388_write_reg(0x18, 0x02);    /* DAC配置 MCLK/采样率=256 */
+    ret_val |= es8388_write_reg(0x18, 0x01);    /* DAC配置 MCLK/采样率=384(必须与I2S_MCLK_MULTIPLE=384匹配) */
     ret_val |= es8388_write_reg(0x1A, 0x00);    /* DAC数字音量控制将信号衰减 L  设置为最小！！！ */
     ret_val |= es8388_write_reg(0x1B, 0x00);    /* DAC数字音量控制将信号衰减 R  设置为最小！！！ */
     ret_val |= es8388_write_reg(0x27, 0xB8);    /* L混频器 */

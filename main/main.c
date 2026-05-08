@@ -20,6 +20,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "nvs_flash.h"
+#include "driver/adc.h"
+#include "esp_adc/adc_oneshot.h"
 #include "key.h"
 #include "myiic.h"
 #include "xl9555.h"
@@ -32,6 +34,9 @@
 #include "exfuns.h"
 #include "audioplay.h"
 #include <stdio.h>
+
+/* ADC句柄（用于电位器音量控制） */
+adc_oneshot_unit_handle_t adc1_handle = NULL;
 
 
 /**
@@ -65,7 +70,20 @@ void app_main(void)
         vTaskDelay(pdMS_TO_TICKS(200));
     }
 
-    xl9555_pin_write(SPK_EN_IO, 0);     /* 打开喇叭 */
+    xl9555_pin_write(SPK_EN_IO, 1);     /* 关闭喇叭功放(使用耳机模式) */
+
+    /* ADC初始化，用于电位器音量控制 */
+    adc_oneshot_unit_init_cfg_t adc_config = {
+        .unit_id = ADC_UNIT_1,
+        .clk_src = ADC_RTC_CLK_SRC_DEFAULT,
+        .ulp_mode = ADC_ULP_MODE_DISABLE,
+    };
+    adc_oneshot_new_unit(&adc_config, &adc1_handle);
+    adc_oneshot_chan_cfg_t chan_cfg = {
+        .atten = ADC_ATTEN_DB_12,
+        .bitwidth = ADC_BITWIDTH_12,
+    };
+    adc_oneshot_config_channel(adc1_handle, ADC_CHANNEL_0, &chan_cfg);
 
     while (sdmmc_init())        /* 检测不到SD卡 */
     {

@@ -21,6 +21,8 @@
 #include "wavplay.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "driver/adc.h"
+#include "esp_adc/adc_oneshot.h"
 
 /******************************************************************************************************/
 /*FreeRTOS配置*/
@@ -35,6 +37,9 @@ void music(void *pvParameters);             /* 任务函数 */
 
 static portMUX_TYPE my_spinlock = portMUX_INITIALIZER_UNLOCKED;
 
+/* 外部ADC句柄（main.c中初始化，用于电位器音量控制） */
+extern adc_oneshot_unit_handle_t adc1_handle;
+
 /******************************************************************************************************/
 
 __wavctrl wavctrl;                          /* WAV音频文件解码参数结构体 */
@@ -43,6 +48,7 @@ volatile long long int i2s_table_size = 0;  /* 积累每次发送音频数据总
 esp_err_t i2s_play_end = ESP_FAIL;          /* 播放结束标志位 */
 esp_err_t i2s_play_next_prev = ESP_FAIL;    /* 下一首或者上一首标志位 */
 FSIZE_t file_read_pos = 0;                  /* 记录当前WAV读取位置 */
+uint8_t audio_channels = 2;                 /* 当前音频声道数(默认立体声),供播放循环做单声道转立体声 */
 
 /**
  * @brief       WAV解析初始化
@@ -66,7 +72,7 @@ uint8_t wav_decode_init(uint8_t *fname, __wavctrl *wavx)
     ChunkDATA *data;
     
     ftemp = (FIL*)malloc(sizeof(FIL));
-    buf = malloc(512);
+    buf = malloc(1024);
     
     if (ftemp && buf)
     {
@@ -74,26 +80,35 @@ uint8_t wav_decode_init(uint8_t *fname, __wavctrl *wavx)
         
         if (res == FR_OK)
         {
-            f_read(ftemp, buf, 512, (UINT *)&br);               /* 读取512字节在数据 */
+            f_read(ftemp, buf, 1024, (UINT *)&br);              /* 读取WAV头数据(增大到1024以支持带metadata的文件) */
             riff = (ChunkRIFF *)buf;
             
             if (riff->Format == 0x45564157)                     /* 是WAV文件 */
             {
                 fmt = (ChunkFMT *)(buf + 12);
-                fact = (ChunkFACT *)(buf + 12 + 8 + fmt->ChunkSize);
                 
-                if (fact->ChunkID == 0x74636166 || fact->ChunkID == 0x5453494C)
+                /* 健壮的chunk链表遍历: 从fmt chunk之后逐个查找data chunk */
+                uint32_t offset = 12 + 8 + fmt->ChunkSize;      /* 跳过RIFF(12) + fmt(ID+Size+Data) */
+                data = NULL;
+                
+                while (offset < 900)  /* 安全上限,防止损坏文件导致越界 */
                 {
-                    wavx->datastart = 12 + 8 + fmt->ChunkSize + 8 + fact->ChunkSize;
-                }
-                else
-                {
-                    wavx->datastart = 12 + 8 + fmt->ChunkSize;
+                    if (offset + 8 > 1024) break;  /* 缓冲区边界检查 */
+                    
+                    uint32_t *p_chunk_id   = (uint32_t *)(buf + offset);
+                    uint32_t *p_chunk_size = (uint32_t *)(buf + offset + 4);
+                    
+                    if (*p_chunk_id == 0x61746164)             /* 找到 "data" chunk */
+                    {
+                        data = (ChunkDATA *)(buf + offset);
+                        break;
+                    }
+                    /* 跳过此chunk: 8字节(ID+Size) + ChunkSize数据 */
+                    offset += 8 + (*p_chunk_size);
+                    if (*p_chunk_size & 1) offset++;           /* 奇数对齐(WAV规范) */
                 }
                 
-                data = (ChunkDATA *)(buf + wavx->datastart);
-                
-                if (data->ChunkID == 0x61746164)                /* 解析成功 */
+                if (data != NULL && data->ChunkID == 0x61746164)  /* 解析成功 */
                 {
                     wavx->audioformat = fmt->AudioFormat;       /* 音频格式 */
                     wavx->nchannels = fmt->NumOfChannels;       /* 通道数 */
@@ -102,8 +117,16 @@ uint8_t wav_decode_init(uint8_t *fname, __wavctrl *wavx)
                     wavx->blockalign = fmt->BlockAlign;
                     wavx->bps = fmt->BitsPerSample;
                     
-                    wavx->datasize = data->ChunkSize;
-                    wavx->datastart = wavx->datastart + 8;
+                    /* 仅支持PCM格式(AudioFormat=1), 其他格式会严重失真 */
+                    if (wavx->audioformat != 1)
+                    {
+                        printf("Err: unsupported format %d(only PCM=1)\r\n", wavx->audioformat);
+                        res = 4;    /* 非PCM格式 */
+                    }
+                    else
+                    {
+                        wavx->datasize = data->ChunkSize;
+                        wavx->datastart = offset + 8;           /* data chunk起始位置 = offset + 跳过"data"+Size(8字节) */
                      
                     printf("wavx->audioformat:%d\r\n", wavx->audioformat);
                     printf("wavx->nchannels:%d\r\n", wavx->nchannels);
@@ -112,7 +135,8 @@ uint8_t wav_decode_init(uint8_t *fname, __wavctrl *wavx)
                     printf("wavx->blockalign:%d\r\n", wavx->blockalign);
                     printf("wavx->bps:%d\r\n", wavx->bps);
                     printf("wavx->datasize:%ld\r\n", wavx->datasize);
-                    printf("wavx->datastart:%ld\r\n", wavx->datastart);  
+                    printf("wavx->datastart:%ld\r\n", wavx->datastart);
+                    }  /* end else (PCM format OK) */
                 }
                 else
                 {
@@ -134,7 +158,7 @@ uint8_t wav_decode_init(uint8_t *fname, __wavctrl *wavx)
     free(ftemp);
     free(buf); 
     
-    return 0;
+    return res;
 }
 
 /**
@@ -165,7 +189,7 @@ void music(void *pvParameters)
     es8388_adda_cfg(1,0);                           /* 打开DAC，关闭ADC */
     es8388_input_cfg(0);                            /* 录音关闭 */
     es8388_output_cfg(0,1);                         /* 关闭喇叭通道，打开耳机通道 */
-    es8388_hpvol_set(25);                           /* 设置耳机音量 */
+    es8388_hpvol_set(20);                           /* 设置耳机音量(有效范围0~33) */
     es8388_spkvol_set(0);                           /* 关闭喇叭音量(静音) */
     xl9555_pin_write(SPK_EN_IO,1);                  /* 关闭喇叭功放 */
     vTaskDelay(pdMS_TO_TICKS(20));
@@ -175,7 +199,9 @@ void music(void *pvParameters)
     {
         if ((g_audiodev.status & 0x0F) == 0x03)     /* 打开了音频 */
         {
-            for(uint16_t readTimes = 0; readTimes < (wavctrl.datasize / WAV_TX_BUFSIZE); readTimes++)
+            /* 使用while循环替代for, 正确处理尾部不足WAV_TX_BUFSIZE的数据 */
+            uint32_t total_read = 0;
+            while (total_read < wavctrl.datasize)
             {
                 if ((g_audiodev.status & 0x0F) == 0x00)             /* 暂停播放 */
                 {
@@ -206,8 +232,50 @@ void music(void *pvParameters)
                     break;                          /* 防止延时5ms未能删除音频任务 */
                 }
 
-                f_read(g_audiodev.file,g_audiodev.tbuf, WAV_TX_BUFSIZE, (UINT*)&bytes_write);
-                i2s_table_size = i2s_table_size + i2s_tx_write(g_audiodev.tbuf, WAV_TX_BUFSIZE);
+                /* 计算本次应读取的字节数(处理尾部剩余数据)
+                 * 单声道转立体声会使数据翻倍,因此读取量不能超过缓冲区一半,
+                 * 否则转换后会溢出缓冲区导致蓝屏! */
+                uint32_t max_read = WAV_TX_BUFSIZE;
+                if (audio_channels == 1) max_read = WAV_TX_BUFSIZE / 2;   /* 单声道限制为一半 */
+
+                uint32_t to_read = wavctrl.datasize - total_read;
+                if (to_read > max_read) to_read = max_read;              /* 使用修正后的上限 */
+
+                f_read(g_audiodev.file, g_audiodev.tbuf, to_read, (UINT*)&bytes_write);
+
+                if (bytes_write > 0)
+                {
+                    /* 单声道转立体声: 将单声道数据复制到左右声道 */
+                    if (audio_channels == 1 && wavctrl.bps == 16)
+                    {
+                        int16_t *src = (int16_t *)g_audiodev.tbuf;
+                        uint32_t samples = bytes_write / sizeof(int16_t);
+                        /* 从后往前复制,避免覆盖未处理数据 */
+                        for (int32_t i = samples - 1; i >= 0; i--)
+                        {
+                            src[i * 2]     = src[i];     /* L通道 = 原始采样 */
+                            src[i * 2 + 1] = src[i];     /* R通道 = 复制采样 */
+                        }
+                        bytes_write *= 2;                /* 字节数翻倍(单声道->立体声) */
+                    }
+                    else if (audio_channels == 1 && wavctrl.bps == 8)
+                    {
+                        /* 8bit单声道转立体声16bit */
+                        int8_t *src8 = (int8_t *)g_audiodev.tbuf;
+                        int16_t *dst16 = (int16_t *)g_audiodev.tbuf;
+                        uint32_t samples = bytes_write;
+                        for (int32_t i = samples - 1; i >= 0; i--)
+                        {
+                            int16_t sample = src8[i] << 8;    /* 8bit扩展到16bit */
+                            dst16[i * 2]     = sample;        /* L */
+                            dst16[i * 2 + 1] = sample;        /* R */
+                        }
+                        bytes_write = samples * 4;           /* 每个采样变成2个16bit=4字节 */
+                    }
+
+                    i2s_table_size += i2s_tx_write(g_audiodev.tbuf, bytes_write);
+                    total_read += (to_read > bytes_write) ? bytes_write : to_read;
+                }
             }
         }
 
@@ -247,14 +315,31 @@ uint8_t wav_play_song(uint8_t *fname)
 
         if (res == 0)                               /* 解码成功 */
         {
-            if (wavctrl.bps == 16)                  /* 根据解码文件重新配置采样率和位宽 */
+            /* 根据解码文件重新配置采样率、位宽和声道 */
+            if (wavctrl.bps == 16)
             {
-                i2s_set_samplerate_bits_sample(wavctrl.samplerate,I2S_BITS_PER_SAMPLE_16BIT);
+                i2s_set_samplerate_bits_sample(wavctrl.samplerate, I2S_BITS_PER_SAMPLE_16BIT);
+                es8388_write_reg(0x17, 0x18);             /* 同步ES8388 DAC为16bit模式 */
             }
             else if (wavctrl.bps == 24)
             {
-                i2s_set_samplerate_bits_sample(wavctrl.samplerate,I2S_BITS_PER_SAMPLE_24BIT);
+                i2s_set_samplerate_bits_sample(wavctrl.samplerate, I2S_BITS_PER_SAMPLE_24BIT);
+                es8388_write_reg(0x17, 0x38);             /* 同步ES8388 DAC为24bit模式 */
             }
+            else if (wavctrl.bps == 8)
+            {
+                /* 8bit音频需要扩展到16bit播放(I2S通常不支持8bit) */
+                i2s_set_samplerate_bits_sample(wavctrl.samplerate, I2S_BITS_PER_SAMPLE_16BIT);
+                es8388_write_reg(0x17, 0x18);             /* ES8388 DAC为16bit模式 */
+            }
+            else
+            {
+                printf("Err: unsupported bps:%d(only 8/16/24)\r\n", wavctrl.bps);
+                res = 0xFF;
+            }
+
+            audio_channels = wavctrl.nchannels;             /* 记录声道数供播放循环使用 */
+            printf("audio_channels:%d\r\n", audio_channels);
 
             res = f_open(g_audiodev.file, (TCHAR*)fname, FA_READ);      /* 打开WAV音频文件 */
 
