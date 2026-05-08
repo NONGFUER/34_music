@@ -26,29 +26,30 @@ i2s_chan_handle_t rx_handle = NULL;     /* I2S接收通道句柄 */
 i2s_std_config_t my_std_cfg;            /* 标准模式配置结构体 */
 
 /*
- * @brief       初始化I2S
- * @param       无
+ * @brief       初始化I2S(带参数版本,避免runtime reconfig不可靠的问题)
+ * @param       samplerate  :目标采样率(如16000, 44100等)
+ * @param       bits_sample :数据位宽(I2S_DATA_BIT_WIDTH_16BIT等)
  * @retval      ESP_OK:初始化成功;其他:失败
  */
-esp_err_t myi2s_init(void)
+esp_err_t myi2s_init(int samplerate, int bits_sample)
 {
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM, I2S_ROLE_MASTER);  /* 默认的通道配置(I2S0,主机) */
     chan_cfg.auto_clear = true;                                             /* 自动清除DMA缓冲区遗留的数据 */ 
     ESP_ERROR_CHECK(i2s_new_channel(&chan_cfg, &tx_handle, &rx_handle));    /* 分配新的I2S通道 */
 
     i2s_std_config_t std_cfg = {    /* 标准通信模式配置 */
-        .clk_cfg  = {               /* 时钟配置 可用I2S_STD_CLK_DEFAULT_CONFIG(I2S_SAMPLE_RATE)宏函数辅助配置 */
-            .sample_rate_hz = I2S_SAMPLE_RATE,              /* I2S采样率 */
+        .clk_cfg  = {               /* 时钟配置 */
+            .sample_rate_hz = samplerate,               /* 使用传入的目标采样率! */
             .clk_src        = I2S_CLK_SRC_DEFAULT,          /* I2S时钟源 */
             .mclk_multiple  = I2S_MCLK_MULTIPLE,            /* I2S主时钟MCLK相对于采样率的倍数(默认256) */
         },
 
-        .slot_cfg = {               /* 声道配置,可用I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO)宏函数辅助配置(支持16位宽采样数据) */
-            .data_bit_width = I2S_DATA_BIT_WIDTH_16BIT,     /* 声道支持16位宽的采样数据 */
-            .slot_bit_width = I2S_SLOT_BIT_WIDTH_AUTO,      /* 通道位宽 */
+        .slot_cfg = {               /* 声道配置 */
+            .data_bit_width = bits_sample,                 /* 使用传入的目标位宽! */
+            .slot_bit_width = bits_sample,                 /* 槽位宽(必须同步!) */
             .slot_mode      = I2S_SLOT_MODE_STEREO,         /* 立体声 */
             .slot_mask      = I2S_STD_SLOT_BOTH,            /* 启用通道 */
-            .ws_width       = I2S_DATA_BIT_WIDTH_16BIT,     /* WS信号位宽 */
+            .ws_width       = bits_sample,                  /* WS信号位宽 */
             .ws_pol         = false,                        /* WS信号极性 */
             .bit_shift      = true,                         /* 位移位(Philips模式下配置) */
             .left_align     = true,                         /* 左对齐 */
@@ -74,8 +75,9 @@ esp_err_t myi2s_init(void)
 
     ESP_ERROR_CHECK(i2s_channel_init_std_mode(tx_handle, &std_cfg));    /* 初始化TX通道 */
     ESP_ERROR_CHECK(i2s_channel_init_std_mode(rx_handle, &std_cfg));    /* 初始化RX通道 */
-    ESP_ERROR_CHECK(i2s_channel_enable(tx_handle));                     /* 启用TX通道 */
-    ESP_ERROR_CHECK(i2s_channel_enable(rx_handle));                     /* 启用RX通道 */
+    /* 注意: 不在此处enable通道, 由 audio_start() -> i2s_trx_start() 统一控制启停 */
+
+    printf("I2S init: rate=%dHz, bits=%d\r\n", samplerate, bits_sample);
 
     return ESP_OK;
 }
@@ -127,8 +129,10 @@ void i2s_set_samplerate_bits_sample(int samplerate, int bits_sample)
     my_std_cfg.slot_cfg.slot_bit_width = bits_sample;    /* 槽位宽(必须同步!) */
     my_std_cfg.slot_cfg.ws_width = bits_sample;          /* WS信号位宽 */
     ESP_ERROR_CHECK(i2s_channel_reconfig_std_slot(tx_handle, &my_std_cfg.slot_cfg));
+    ESP_ERROR_CHECK(i2s_channel_reconfig_std_slot(rx_handle, &my_std_cfg.slot_cfg));  /* 同步RX通道 */
     my_std_cfg.clk_cfg.sample_rate_hz = samplerate;      /* 设置采样率 */
     ESP_ERROR_CHECK(i2s_channel_reconfig_std_clock(tx_handle, &my_std_cfg.clk_cfg));
+    ESP_ERROR_CHECK(i2s_channel_reconfig_std_clock(rx_handle, &my_std_cfg.clk_cfg));  /* 同步RX通道 */
 }
 
 /**

@@ -41,7 +41,7 @@ extern i2s_chan_handle_t tx_handle;
 extern i2s_chan_handle_t rx_handle;
 
 /* 函数声明 */
-esp_err_t myi2s_init(void);                                         /* I2S初始化 */
+esp_err_t myi2s_init(int samplerate, int bits_sample);               /* I2S初始化(带采样率和位宽参数) */
 void i2s_trx_start(void);                                           /* 启动I2S */
 void i2s_trx_stop(void);                                            /* 停止I2S */
 void i2s_deinit(void);                                              /* 卸载I2S */

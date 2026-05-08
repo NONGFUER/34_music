@@ -303,43 +303,43 @@ uint8_t wav_play_song(uint8_t *fname)
     g_audiodev.file = (FIL*)heap_caps_malloc(sizeof(FIL),MALLOC_CAP_DMA);
     g_audiodev.tbuf = heap_caps_malloc(WAV_TX_BUFSIZE, MALLOC_CAP_DMA);       /* 音频数据 */
 
-    myi2s_init();                                   /* I2S初始化 */
-    vTaskDelay(pdMS_TO_TICKS(50));                  /* 适当延时 */
+    /* ★ 先解析WAV文件获取采样率和位宽参数 */
+    memset(&wavctrl,0,sizeof(__wavctrl));       /* 对WAV结构体相关参数清零 */
+    res = wav_decode_init(fname, &wavctrl);     /* 对wav音频文件解码 */
 
     if (g_audiodev.file || g_audiodev.tbuf)
     {
         memset(g_audiodev.file,0,sizeof(FIL));      /* 文件指针清零 */
         memset(g_audiodev.tbuf,0,WAV_TX_BUFSIZE);   /* buf清零 */
-        memset(&wavctrl,0,sizeof(__wavctrl));       /* 对WAV结构体相关参数清零 */
-        res = wav_decode_init(fname, &wavctrl);     /* 对wav音频文件解码 */
 
         if (res == 0)                               /* 解码成功 */
         {
-            /* 根据解码文件重新配置采样率、位宽和声道 */
-            if (wavctrl.bps == 16)
-            {
-                i2s_set_samplerate_bits_sample(wavctrl.samplerate, I2S_BITS_PER_SAMPLE_16BIT);
-                es8388_write_reg(0x17, 0x18);             /* 同步ES8388 DAC为16bit模式 */
-            }
+            /* ★ 根据解析结果确定I2S位宽参数 */
+            int i2s_bits;
+            if (wavctrl.bps == 16 || wavctrl.bps == 8)
+                i2s_bits = I2S_DATA_BIT_WIDTH_16BIT;   /* 8bit/16bit都扩展为16bit播放 */
             else if (wavctrl.bps == 24)
-            {
-                i2s_set_samplerate_bits_sample(wavctrl.samplerate, I2S_BITS_PER_SAMPLE_24BIT);
-                es8388_write_reg(0x17, 0x38);             /* 同步ES8388 DAC为24bit模式 */
-            }
-            else if (wavctrl.bps == 8)
-            {
-                /* 8bit音频需要扩展到16bit播放(I2S通常不支持8bit) */
-                i2s_set_samplerate_bits_sample(wavctrl.samplerate, I2S_BITS_PER_SAMPLE_16BIT);
-                es8388_write_reg(0x17, 0x18);             /* ES8388 DAC为16bit模式 */
-            }
+                i2s_bits = I2S_DATA_BIT_WIDTH_24BIT;
             else
             {
                 printf("Err: unsupported bps:%d(only 8/16/24)\r\n", wavctrl.bps);
                 res = 0xFF;
             }
 
-            audio_channels = wavctrl.nchannels;             /* 记录声道数供播放循环使用 */
-            printf("audio_channels:%d\r\n", audio_channels);
+            if (res != 0xFF)
+            {
+                myi2s_init(wavctrl.samplerate, i2s_bits);              /* ★ 用目标参数直接初始化I2S(避免reconfig不可靠) */
+                vTaskDelay(pdMS_TO_TICKS(50));
+
+                /* 配置ES8388 DAC与I2S同步 */
+                if (wavctrl.bps == 16 || wavctrl.bps == 8)
+                    es8388_write_reg(0x17, 0x18);                      /* DAC 16bit模式 */
+                else if (wavctrl.bps == 24)
+                    es8388_write_reg(0x17, 0x38);                      /* DAC 24bit模式 */
+
+                audio_channels = wavctrl.nchannels;                     /* 记录声道数供播放循环使用 */
+                printf("audio_channels:%d\r\n", audio_channels);
+            }
 
             res = f_open(g_audiodev.file, (TCHAR*)fname, FA_READ);      /* 打开WAV音频文件 */
 
