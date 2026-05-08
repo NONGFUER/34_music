@@ -188,10 +188,10 @@ void music(void *pvParameters)
     /* ES8388初始化配置，有效降低启动时发出沙沙声 */
     es8388_adda_cfg(1,0);                           /* 打开DAC，关闭ADC */
     es8388_input_cfg(0);                            /* 录音关闭 */
-    es8388_output_cfg(0,1);                         /* 关闭喇叭通道，打开耳机通道 */
+    es8388_output_cfg(1,1);                         /* 同时打开喇叭(线路)和耳机通道 */
     es8388_hpvol_set(20);                           /* 设置耳机音量(有效范围0~33) */
-    es8388_spkvol_set(0);                           /* 关闭喇叭音量(静音) */
-    xl9555_pin_write(SPK_EN_IO,1);                  /* 关闭喇叭功放 */
+    es8388_spkvol_set(30);                          /* 喇叭/线路音量设为最大，供外部功放使用 */
+    xl9555_pin_write(SPK_EN_IO,0);                  /* 打开喇叭功放使能 */
     vTaskDelay(pdMS_TO_TICKS(20));
     i2s_tx_write(g_audiodev.tbuf, WAV_TX_BUFSIZE);  /* 先发送一段无声音的数据 */
 
