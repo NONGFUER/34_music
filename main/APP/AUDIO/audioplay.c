@@ -21,6 +21,7 @@
 #include "audioplay.h"
 #include "rs485.h"
 #include "piclib.h"
+#include "es8388.h"
 
 
 __audiodev g_audiodev;          /* 音乐播放控制器 */
@@ -28,6 +29,10 @@ __audiodev g_audiodev;          /* 音乐播放控制器 */
 /* RS485远程控制变量 */
 volatile uint8_t rs485_target_index = 0;    /* 目标曲目编号(1-based), 0=无效 */
 volatile uint8_t rs485_cmd_flag = 0;         /* 新命令标志 */
+
+/* RS485音量控制变量 */
+volatile uint8_t rs485_volume_val = 0xFF;    /* 音量值(0~33), 0xFF=无效 */
+volatile uint8_t rs485_volume_flag = 0;      /* 音量命令标志: 1=有待处理 */
 
 /**
  * @brief       开始音频播放

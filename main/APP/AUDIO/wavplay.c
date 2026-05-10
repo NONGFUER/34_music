@@ -23,6 +23,8 @@
 #include "freertos/task.h"
 #include "driver/adc.h"
 #include "esp_adc/adc_oneshot.h"
+#include "es8388.h"
+#include "audioplay.h"
 
 /******************************************************************************************************/
 /*FreeRTOS配置*/
@@ -394,6 +396,16 @@ uint8_t wav_play_song(uint8_t *fname)
                         {
                             wav_get_curtime(g_audiodev.file, &wavctrl);         /* 得到总时间和当前播放的时间 */
                             audio_msg_show(wavctrl.totsec, wavctrl.cursec, wavctrl.bitrate);
+                        }
+
+                        /* ★ RS485音量控制: 播放期间实时响应 */
+                        if (rs485_volume_flag && rs485_volume_val <= 33)
+                        {
+                            es8388_hpvol_set(rs485_volume_val);
+                            es8388_spkvol_set(rs485_volume_val);
+                            printf("[MUSIC] Volume -> %d/33\r\n", rs485_volume_val);
+                            rs485_volume_flag = 0;
+                            rs485_volume_val = 0xFF;
                         }
 
                         vTaskDelay(pdMS_TO_TICKS(10));

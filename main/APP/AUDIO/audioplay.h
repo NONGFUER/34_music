@@ -44,6 +44,10 @@ extern __audiodev g_audiodev;
 extern volatile uint8_t rs485_target_index;    /* 目标曲目编号(1-based), 0表示无效 */
 extern volatile uint8_t rs485_cmd_flag;         /* 新命令标志: 1=有待处理命令 */
 
+/* RS485音量控制变量 */
+extern volatile uint8_t rs485_volume_val;       /* 音量值(0~33), 0xFF表示无效/无音量命令 */
+extern volatile uint8_t rs485_volume_flag;      /* 音量命令标志: 1=有待处理的音量指令 */
+
 /* 函数声明 */
 void audio_start(void);                                                 /* 开始音频播放 */
 void audio_stop(void);                                                  /* 停止音频播放 */

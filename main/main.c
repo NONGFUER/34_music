@@ -45,7 +45,23 @@ adc_oneshot_unit_handle_t adc1_handle = NULL;
 #define RS485_TASK_STK_SIZE  2*1024          /* 任务堆栈 */
 
 /**
- * @brief   RS485接收任务: 接收PC发来的切歌指令并设置全局控制变量
+ * @brief   RS485接收任务: 接收PC发来的指令并设置全局控制变量
+ *
+ *  ★ RS485通信协议 (多字节帧格式) ★
+ *  ┌─────────────────────────────────────────────────────┐
+ *  │ 帧格式: [CMD] [DATA]                                │
+ *  │                                                     │
+ *  │ CMD = 0x01 ~ 0xFF (单字节, 值1~255):                │
+ *  │       → 切歌命令, DATA=曲目编号(与CMD相同,兼容旧协议)│
+ *  │       例: 发送 0x03 → 播放第3首                      │
+ *  │                                                     │
+ *  │ CMD = 0xA0: 音量控制命令                             │
+ *  │       → 下一个字节 DATA = 音量值(0~33)               │
+ *  │       例: 发送 [0xA0, 0x1E] → 音量设为30            │
+ *  │           发送 [0xA0, 0x00] → 静音                  │
+ *  │           发送 [0xA0, 0x21] → 最大音量(33)          │
+ *  └─────────────────────────────────────────────────────┘
+ *
  * @param   arg: 未使用
  */
 static void rs485_task(void *arg)
@@ -59,23 +75,37 @@ static void rs485_task(void *arg)
 
         if (rx_len > 0)
         {
-            /* 简单协议: 收到的第一个字节就是曲目编号(十六进制)
-             * 例: PC发送 0x01 -> 播放第1首, 0x0A -> 播放第10首 */
             uint8_t cmd = rx_buf[0];
 
-            if (cmd >= 1 && cmd <= 255)                              /* 有效范围 */
+            if (cmd == 0xA0 && rx_len >= 2)
             {
-                rs485_target_index = cmd;                            /* 设置目标曲目(1-based) */
-                rs485_cmd_flag = 1;                                  /* 置位命令标志 */
-                i2s_play_next_prev = ESP_OK;                         /* 触发当前歌曲停止 */
+                /* ★ 音量控制命令: 0xA0 + 音量值 */
+                uint8_t vol = rx_buf[1];
+                if (vol <= 33)
+                {
+                    rs485_volume_val = vol;
+                    rs485_volume_flag = 1;
+                    printf("[RS485] RX VOL: %d/33\r\n", vol);
+                }
+                else
+                {
+                    printf("[RS485] RX VOL ERR: %d (max=33)\r\n", vol);
+                }
+            }
+            else if (cmd >= 1 && cmd <= 255)
+            {
+                /* ★ 切歌命令 (兼容单字节协议) */
+                rs485_target_index = cmd;
+                rs485_cmd_flag = 1;
+                i2s_play_next_prev = ESP_OK;
 
-                printf("[RS485] RX: 0x%02X -> song #%d\r\n", cmd, cmd);
+                printf("[RS485] RX SONG: 0x%02X -> #%d\r\n", cmd, cmd);
             }
 
             rx_len = 0;
         }
 
-        vTaskDelay(pdMS_TO_TICKS(20));                               /* 20ms轮询间隔 */
+        vTaskDelay(pdMS_TO_TICKS(10));          /* 10ms轮询(加快响应速度) */
     }
 }
 
@@ -156,13 +186,13 @@ void app_main(void)
         lcd_clear(WHITE);   
     }
 
+    /* ★ 初始化图片解码库 (必须在加载图片之前!!) */
+    piclib_init();
+    printf("[PIC] piclib init done\r\n");
+
     /* 开机显示待机画面 */
     piclib_ai_load_picfile("0:/PICTURE/standby.png", 0, 0, lcddev.width, lcddev.height);
     printf("[PIC] Standby image loaded\r\n");
-
-    /* ★ 初始化图片解码库 */
-    piclib_init();
-    printf("[PIC] piclib init done\r\n");
 
     /* ★ 初始化RS485 (UART1, 波特率9600) */
     rs485_init(9600);
@@ -175,6 +205,16 @@ void app_main(void)
     /* ★ 主循环: 等待RS485指令才播放，不自动播放 */
     while (1)
     {
+        /* ★ 音量控制: 立即响应(即使不在播放中也可以调音量) */
+        if (rs485_volume_flag && rs485_volume_val <= 33)
+        {
+            es8388_hpvol_set(rs485_volume_val);
+            es8388_spkvol_set(rs485_volume_val);
+            printf("[MAIN] Volume set: %d/33\r\n", rs485_volume_val);
+            rs485_volume_flag = 0;
+            rs485_volume_val = 0xFF;     /* 标记为无效,防止重复执行 */
+        }
+
         if (rs485_cmd_flag && rs485_target_index > 0)
         {
             printf("[MAIN] Playing song #%d via RS485\r\n", rs485_target_index);
@@ -185,6 +225,6 @@ void app_main(void)
             piclib_ai_load_picfile("0:/PICTURE/standby.png", 0, 0, lcddev.width, lcddev.height);
         }
 
-        vTaskDelay(pdMS_TO_TICKS(50));
+        vTaskDelay(pdMS_TO_TICKS(10));       /* 10ms轮询(加快响应) */
     }
 }
