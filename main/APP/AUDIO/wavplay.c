@@ -185,15 +185,18 @@ void music(void *pvParameters)
 {
     pvParameters = pvParameters;
 
-    /* ES8388初始化配置，有效降低启动时发出沙沙声 */
+    /* ES8388初始化配置，有效降低启动时发出沙沙声
+     * ★ 关键时序优化：先配置ES8388内部参数 → 填充静音数据到I2S缓冲区 → 最后才使能功放
+     *   这样可以避免功放打开瞬间放大DAC的随机/不稳定输出，消除POP音和杂音 */
     es8388_adda_cfg(1,0);                           /* 打开DAC，关闭ADC */
     es8388_input_cfg(0);                            /* 录音关闭 */
     es8388_output_cfg(1,1);                         /* 同时打开喇叭(线路)和耳机通道 */
     es8388_hpvol_set(20);                           /* 设置耳机音量(有效范围0~33) */
-    es8388_spkvol_set(30);                          /* 喇叭/线路音量设为最大，供外部功放使用 */
-    xl9555_pin_write(SPK_EN_IO,0);                  /* 打开喇叭功放使能 */
-    vTaskDelay(pdMS_TO_TICKS(20));
-    i2s_tx_write(g_audiodev.tbuf, WAV_TX_BUFSIZE);  /* 先发送一段无声音的数据 */
+    es8388_spkvol_set(20);                          /* 喇叭/线路音量，供外部功放使用 */
+    vTaskDelay(pdMS_TO_TICKS(20));                  /* 等待ES8388内部配置稳定 */
+    i2s_tx_write(g_audiodev.tbuf, WAV_TX_BUFSIZE);  /* 先发送一段无声音的数据，填充I2S缓冲区 */
+    vTaskDelay(pdMS_TO_TICKS(10));                  /* 等待I2S将静音数据播放出去，确保DAC输出稳定为0 */
+    xl9555_pin_write(SPK_EN_IO,0);                  /* ★ 最后才打开喇叭功放使能（此时输出已是静音） */
 
     while(1)
     {

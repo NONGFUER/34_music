@@ -33,10 +33,51 @@
 #include "fonts.h"
 #include "exfuns.h"
 #include "audioplay.h"
+#include "rs485.h"
+#include "piclib.h"
 #include <stdio.h>
 
 /* ADC句柄（用于电位器音量控制） */
 adc_oneshot_unit_handle_t adc1_handle = NULL;
+
+/* RS485接收任务配置 */
+#define RS485_TASK_PRIO      3               /* 任务优先级(低于MUSIC的4-5) */
+#define RS485_TASK_STK_SIZE  2*1024          /* 任务堆栈 */
+
+/**
+ * @brief   RS485接收任务: 接收PC发来的切歌指令并设置全局控制变量
+ * @param   arg: 未使用
+ */
+static void rs485_task(void *arg)
+{
+    uint8_t rx_buf[16];
+    uint8_t rx_len = 0;
+
+    while (1)
+    {
+        rs485_receive_data(rx_buf, &rx_len);
+
+        if (rx_len > 0)
+        {
+            /* 简单协议: 收到的第一个字节就是曲目编号(十六进制)
+             * 例: PC发送 0x01 -> 播放第1首, 0x0A -> 播放第10首 */
+            uint8_t cmd = rx_buf[0];
+
+            if (cmd >= 1 && cmd <= 255)                              /* 有效范围 */
+            {
+                rs485_target_index = cmd;                            /* 设置目标曲目(1-based) */
+                rs485_cmd_flag = 1;                                  /* 置位命令标志 */
+                i2s_play_next_prev = ESP_OK;                         /* 触发当前歌曲停止 */
+
+                printf("[RS485] RX: 0x%02X -> song #%d\r\n", cmd, cmd);
+            }
+
+            rx_len = 0;
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(20));                               /* 20ms轮询间隔 */
+    }
+}
 
 
 /**
@@ -115,16 +156,35 @@ void app_main(void)
         lcd_clear(WHITE);   
     }
 
-    text_show_string(30, 50,  200, 16, "正点原子ESP32-P4开发板",16, 0, RED);
-    text_show_string(30, 70,  200, 16, "音乐播放器 实验", 16, 0, RED);
-    text_show_string(30, 90,  200, 16, "正点原子@ALIENTEK", 16, 0, RED);
-    text_show_string(30, 110, 200, 16, "KEY0:NEXT  KEY1:PREV", 16, 0, RED);
-    text_show_string(30, 130, 200, 16, "KEY2:PAUSE/PLAY", 16, 0, RED);
+    /* 开机显示待机画面 */
+    piclib_ai_load_picfile("0:/PICTURE/standby.png", 0, 0, lcddev.width, lcddev.height);
+    printf("[PIC] Standby image loaded\r\n");
 
-    vTaskDelay(pdMS_TO_TICKS(1000));
+    /* ★ 初始化图片解码库 */
+    piclib_init();
+    printf("[PIC] piclib init done\r\n");
 
+    /* ★ 初始化RS485 (UART1, 波特率9600) */
+    rs485_init(9600);
+    printf("[RS485] init done @9600bps\r\n");
+
+    /* ★ 创建RS485接收任务 */
+    xTaskCreate(rs485_task, "rs485", RS485_TASK_STK_SIZE, NULL, RS485_TASK_PRIO, NULL);
+    printf("[RS485] task started\r\n");
+
+    /* ★ 主循环: 等待RS485指令才播放，不自动播放 */
     while (1)
     {
-        audio_play();       /* 播放音乐 */
+        if (rs485_cmd_flag && rs485_target_index > 0)
+        {
+            printf("[MAIN] Playing song #%d via RS485\r\n", rs485_target_index);
+            audio_play();       /* 收到RS485指令后播放音乐 */
+            rs485_cmd_flag = 0; /* 播放结束,清除标志 */
+
+            /* 播放完回到待机画面 */
+            piclib_ai_load_picfile("0:/PICTURE/standby.png", 0, 0, lcddev.width, lcddev.height);
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(50));
     }
 }

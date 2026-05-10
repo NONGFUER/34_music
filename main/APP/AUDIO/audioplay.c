@@ -19,9 +19,15 @@
  */
 
 #include "audioplay.h"
+#include "rs485.h"
+#include "piclib.h"
 
 
 __audiodev g_audiodev;          /* 音乐播放控制器 */
+
+/* RS485远程控制变量 */
+volatile uint8_t rs485_target_index = 0;    /* 目标曲目编号(1-based), 0=无效 */
+volatile uint8_t rs485_cmd_flag = 0;         /* 新命令标志 */
 
 /**
  * @brief       开始音频播放
@@ -284,6 +290,14 @@ void audio_play(void)
 
     while (res == FR_OK)                                        /* 打开目录 */
     {
+        /* ★ RS485远程控制: 检查是否有来自PC的切歌命令 */
+        if (rs485_cmd_flag && rs485_target_index > 0 && rs485_target_index <= totwavnum)
+        {
+            curindex = rs485_target_index - 1;                 /* 转为0-based索引 */
+            rs485_cmd_flag = 0;                                 /* 清除标志 */
+            printf("[RS485] Switch to song #%d (index=%d)\r\n", rs485_target_index, curindex);
+        }
+
         atk_dir_sdi(&wavdir, wavoffsettbl[curindex]);           /* 改变当前目录索引 */
 
         res = f_readdir(&wavdir, wavfileinfo);                  /* 读取文件 */
@@ -295,34 +309,44 @@ void audio_play(void)
         
         strcpy((char *)pname, "0:/MUSIC/");
         strcat((char *)pname, (const char *)wavfileinfo->fname);
-        lcd_fill(30, 190, 330, 216, WHITE);
-        audio_index_show(curindex + 1, totwavnum);
-        text_show_string(30, 190, 300, 16, (char *)wavfileinfo->fname, 16, 0, BLUE);
-        key = audio_play_song(pname);
 
-        if (key == KEY1_PRES)       /* 上一首 */
+        /* ★ 显示对应封面图片 (0:/PIC/01.jpg 等) */
         {
-            if (curindex)
+            char pic_path[64];
+            snprintf(pic_path, sizeof(pic_path), "0:/PICTURE/%02d", curindex + 1);
+            printf("[PIC] Trying image: %s\r\n", pic_path);
+            const char *exts[] = {".jpg", ".jpeg", ".bmp", ".png"};
+            uint8_t loaded = 0;
+            for (int e = 0; e < 4; e++)
             {
-                curindex--;
+                char full_path[72];
+                snprintf(full_path, sizeof(full_path), "%s%s", pic_path, exts[e]);
+                uint8_t ret = piclib_ai_load_picfile(full_path, 0, 0, lcddev.width, lcddev.height);
+                printf("[PIC] load %s -> %d\r\n", full_path, ret);
+                if (ret == 0)
+                {
+                    printf("[PIC] Loaded OK: %s\r\n", full_path);
+                    loaded = 1;
+                    break;
+                }
             }
-            else
-            {
-                curindex = totwavnum - 1;
+            if (!loaded) {
+                printf("[PIC] WARN: No image found for song #%d!\r\n", curindex + 1);
             }
         }
-        else if (key == KEY0_PRES)  /* 下一首 */
-        {
-            curindex++;
 
-            if (curindex >= totwavnum)
-            {
-                curindex = 0;
-            }
+        key = audio_play_song(pname);
+
+        if (rs485_cmd_flag && rs485_target_index > 0 && rs485_target_index <= totwavnum)
+        {
+            /* ★ RS485远程命令: 播放期间收到指令, 跳转到指定曲目 */
+            curindex = rs485_target_index - 1;
+            rs485_cmd_flag = 0;
+            printf("[RS485] Interrupt jump to song #%d\r\n", rs485_target_index);
         }
         else
         {
-            break;
+            break;   /* ★ 播放结束(无新RS485指令) → 退出循环,回到等待状态 */
         }
     }
 

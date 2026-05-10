@@ -6,7 +6,8 @@ set(src_dirs
             LCD
             ES8388
             MYI2S
-            SDMMC)
+            SDMMC
+            RS485)
 
 set(include_dirs
             LED
@@ -16,7 +17,8 @@ set(include_dirs
             LCD
             ES8388
             MYI2S
-            SDMMC)
+            SDMMC
+            RS485)
 
 set(requires
             driver

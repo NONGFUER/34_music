@@ -7,4 +7,10 @@ idf_component_register(
         "."
         "APP"
         "APP/AUDIO"
-    )
+    REQUIRES
+        BSP
+        PICTURE
+        TEXT
+        esp_adc
+        nvs_flash
+)

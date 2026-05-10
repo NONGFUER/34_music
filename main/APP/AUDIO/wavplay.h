@@ -102,4 +102,9 @@ typedef struct
 uint8_t wav_decode_init(uint8_t *fname, __wavctrl *wavx);   /* WAV解码初始化 */
 uint8_t wav_play_song(uint8_t *fname);                      /* 播放歌曲 */
 
+/* 全局变量声明 (定义在 wavplay.c 中，供外部文件使用) */
+extern volatile long long int i2s_table_size;    /* 积累每次发送音频数据总大小 */
+extern esp_err_t i2s_play_end;                   /* 播放结束标志位 */
+extern esp_err_t i2s_play_next_prev;             /* 下一首或者上一首标志位 */
+
 #endif

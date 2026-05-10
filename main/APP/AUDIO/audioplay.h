@@ -40,6 +40,10 @@ typedef struct
 
 extern __audiodev g_audiodev;
 
+/* RS485远程控制变量 (由RS485接收任务写入, audio_play读取) */
+extern volatile uint8_t rs485_target_index;    /* 目标曲目编号(1-based), 0表示无效 */
+extern volatile uint8_t rs485_cmd_flag;         /* 新命令标志: 1=有待处理命令 */
+
 /* 函数声明 */
 void audio_start(void);                                                 /* 开始音频播放 */
 void audio_stop(void);                                                  /* 停止音频播放 */
