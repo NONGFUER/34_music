@@ -202,7 +202,9 @@ void app_main(void)
     xTaskCreate(rs485_task, "rs485", RS485_TASK_STK_SIZE, NULL, RS485_TASK_PRIO, NULL);
     printf("[RS485] task started\r\n");
 
-    /* ★ 主循环: 等待RS485指令才播放，不自动播放 */
+    /* ★ 主循环: 支持RS485远程控制 + 本地按键双模式 */
+    static uint8_t local_song_index = 1;   /* 本地曲目索引 */
+
     while (1)
     {
         /* ★ 音量控制: 立即响应(即使不在播放中也可以调音量) */
@@ -215,14 +217,43 @@ void app_main(void)
             rs485_volume_val = 0xFF;     /* 标记为无效,防止重复执行 */
         }
 
+        /* ★ RS485远程切歌命令 */
         if (rs485_cmd_flag && rs485_target_index > 0)
         {
             printf("[MAIN] Playing song #%d via RS485\r\n", rs485_target_index);
             audio_play();       /* 收到RS485指令后播放音乐 */
             rs485_cmd_flag = 0; /* 播放结束,清除标志 */
+            local_song_index = rs485_target_index;  /* 同步本地索引 */
 
             /* 播放完回到待机画面 */
             piclib_ai_load_picfile("0:/PICTURE/standby.png", 0, 0, lcddev.width, lcddev.height);
+        }
+
+        /* ★ 本地按键控制 (与RS485并存) */
+        key = xl9555_key_scan(0);
+
+        if (key == KEY0_PRES)
+        {
+            /* KEY0: 下一曲 */
+            local_song_index++;
+            rs485_target_index = local_song_index;
+            rs485_cmd_flag = 1;
+            printf("[KEY] KEY0 -> Next song #%d\r\n", local_song_index);
+        }
+        else if (key == KEY1_PRES)
+        {
+            /* KEY1: 上一曲 */
+            if (local_song_index > 1) local_song_index--;
+            rs485_target_index = local_song_index;
+            rs485_cmd_flag = 1;
+            printf("[KEY] KEY1 -> Prev song #%d\r\n", local_song_index);
+        }
+        else if (key == KEY2_PRES)
+        {
+            /* KEY2: 开始播放当前曲目 */
+            rs485_target_index = local_song_index;
+            rs485_cmd_flag = 1;
+            printf("[KEY] KEY2 -> Play song #%d\r\n", local_song_index);
         }
 
         vTaskDelay(pdMS_TO_TICKS(10));       /* 10ms轮询(加快响应) */
