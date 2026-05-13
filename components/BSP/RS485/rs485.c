@@ -1,3 +1,4 @@
+
 /**
  ****************************************************************************************************
  * @file        rs485.c
@@ -19,7 +20,7 @@
  */
 
 #include "rs485.h"
-
+#include <string.h>
 
 /**
  * @brief       RS485模式控制.
@@ -99,4 +100,123 @@ esp_err_t rs485_receive_data(uint8_t *buf, uint8_t *len)
     }
 
     return ESP_OK;
+}
+
+/* ================================================================== */
+/*                      MODBUS RTU 协议处理                            */
+/* ================================================================== */
+
+/**
+ * @brief MODBUS CRC16 计算
+ * @note  多项式 0xA001, 初始值 0xFFFF, LSB first
+ */
+uint16_t modbus_crc16(const uint8_t *buf, uint8_t len)
+{
+    uint16_t crc = 0xFFFF;
+
+    for (uint8_t i = 0; i < len; i++) {
+        crc ^= buf[i];
+        for (uint8_t j = 0; j < 8; j++) {
+            if (crc & 0x0001) {
+                crc = (crc >> 1) ^ 0xA001;
+            } else {
+                crc >>= 1;
+            }
+        }
+    }
+
+    return crc;
+}
+
+/**
+ * @brief MODBUS RTU 请求帧解析 + 响应帧构建
+ * @note  仅处理功能码 0x06 (写单个寄存器)
+ *        - 播放控制区 0x0001~0x00FF: 数据 0001=播放 / 0000=停止
+ *        - 音量控制区 0x0100: 数据 0000~0021
+ */
+int modbus_parse_frame(const uint8_t *rx_buf, uint8_t rx_len,
+                       uint8_t *tx_buf, uint8_t *tx_len,
+                       uint16_t *reg_addr, uint16_t *reg_data)
+{
+    *tx_len = 0;
+
+    /* ---- 1. 帧长检查: MODBUS 写单寄存器最小帧=8字节 ---- */
+    if (rx_len < 8) {
+        return -1;  /* 帧不完整, 不回应 */
+    }
+
+    /* ---- 2. 从机地址检查 ---- */
+    if (rx_buf[0] != MODBUS_SLAVE_ADDR) {
+        return -1;  /* 不是发给我们的, 不回应 */
+    }
+
+    /* ---- 3. CRC16 校验 ---- */
+    uint16_t recv_crc = rx_buf[6] | ((uint16_t)rx_buf[7] << 8);
+    uint16_t calc_crc = modbus_crc16(rx_buf, 6);
+
+    if (recv_crc != calc_crc) {
+        return -1;  /* CRC错误, 不回应 */
+    }
+
+    /* ---- 4. 功能码检查 ---- */
+    uint8_t func = rx_buf[1];
+    if (func != MODBUS_FUNC_WRITE_REG) {
+        /* 异常响应: 非法功能码 */
+        tx_buf[0] = MODBUS_SLAVE_ADDR;
+        tx_buf[1] = func | 0x80;
+        tx_buf[2] = MODBUS_EX_ILLEGAL_FUNC;
+        uint16_t crc = modbus_crc16(tx_buf, 3);
+        tx_buf[3] = crc & 0xFF;
+        tx_buf[4] = (crc >> 8) & 0xFF;
+        *tx_len = 5;
+        return 1;
+    }
+
+    /* ---- 5. 提取寄存器地址和数据 ---- */
+    *reg_addr = ((uint16_t)rx_buf[2] << 8) | rx_buf[3];
+    *reg_data = ((uint16_t)rx_buf[4] << 8) | rx_buf[5];
+
+    /* ---- 6. 验证寄存器地址和数据 ---- */
+    if (*reg_addr >= MODBUS_REG_SONG_FIRST && *reg_addr <= MODBUS_REG_SONG_LAST) {
+        /* 播放控制区: 数据必须是 0x0000(停止) 或 0x0001(播放) */
+        if (*reg_data != MODBUS_VAL_STOP && *reg_data != MODBUS_VAL_PLAY) {
+            goto exception_illegal_data;
+        }
+    } else if (*reg_addr == MODBUS_REG_VOLUME) {
+        /* 音量控制区: 数据范围 0x0000 ~ 0x0021 (0~33) */
+        if (*reg_data > 0x0021) {
+            goto exception_illegal_data;
+        }
+    } else {
+        /* 非法地址 */
+        goto exception_illegal_addr;
+    }
+
+    /* ---- 7. 有效命令 → 回显响应 ---- */
+    memcpy(tx_buf, rx_buf, 6);
+    uint16_t resp_crc = modbus_crc16(tx_buf, 6);
+    tx_buf[6] = resp_crc & 0xFF;
+    tx_buf[7] = (resp_crc >> 8) & 0xFF;
+    *tx_len = 8;
+    return 0;
+
+exception_illegal_addr:
+    tx_buf[0] = MODBUS_SLAVE_ADDR;
+    tx_buf[1] = MODBUS_FUNC_WRITE_REG | 0x80;
+    tx_buf[2] = MODBUS_EX_ILLEGAL_ADDR;
+    goto build_exception_crc;
+
+exception_illegal_data:
+    tx_buf[0] = MODBUS_SLAVE_ADDR;
+    tx_buf[1] = MODBUS_FUNC_WRITE_REG | 0x80;
+    tx_buf[2] = MODBUS_EX_ILLEGAL_DATA;
+
+build_exception_crc:
+    {
+        uint16_t crc = modbus_crc16(tx_buf, 3);
+        tx_buf[3] = crc & 0xFF;
+        tx_buf[4] = (crc >> 8) & 0xFF;
+        *tx_len = 5;
+    }
+    return 1;
 }
