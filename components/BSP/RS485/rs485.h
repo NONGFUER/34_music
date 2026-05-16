@@ -1,7 +1,7 @@
 /**
  ****************************************************************************************************
  * @file        rs485.h
- * @author      正点原子团队(ALIENTEK)
+ * @author      sjwu
  * @version     V1.0
  * @date        2025-01-01
  * @brief       RS485驱动代码
@@ -44,7 +44,30 @@
 /* 寄存器地址映射 */
 #define MODBUS_REG_SONG_FIRST    0x0001  /* 第1首 */
 #define MODBUS_REG_SONG_LAST     0x00FF  /* 第255首 */
+
 #define MODBUS_REG_VOLUME        0x0100  /* 音量寄存器 */
+
+/* ========================= 炒菜机UI扩展 ========================= */
+#define MODBUS_REG_CMD           0x0201  /* 综合命令寄存器 */
+#define MODBUS_REG_BOX1_STATUS   0x0202  /* 菜盒1状态 */
+#define MODBUS_REG_BOX2_STATUS   0x0203  /* 菜盒2状态 */
+#define MODBUS_REG_BOX3_STATUS   0x0204  /* 菜盒3状态 */
+
+/* 综合命令有效值 */
+#define CMD_POUR_BOX1       0x01    /* 一号投料 */
+#define CMD_POUR_BOX2       0x02    /* 二号投料 */
+#define CMD_POUR_BOX3       0x03    /* 三号投料 */
+#define CMD_RESET           0x05    /* 投料盒归位 */
+#define CMD_START_COOK      0x06    /* 炒菜开始 */
+#define CMD_FINISH          0x07    /* 炒菜完成 */
+#define CMD_ALARM_TEMP      0x10    /* 温度异常 */
+#define CMD_ALARM_FIRE      0x11    /* 火警 */
+#define CMD_IDLE            0xFF    /* 复位待机 */
+
+/* 菜盒状态值 */
+#define BOX_VAL_READY       0x00    /* 就绪 */
+#define BOX_VAL_DONE        0x01    /* 完成 */
+#define BOX_VAL_POURING     0x02    /* 倒菜中 */
 
 /* 数据区有效值 (播放控制) */
 #define MODBUS_VAL_STOP          0x0000  /* 停止/暂停 */

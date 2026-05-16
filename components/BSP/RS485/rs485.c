@@ -2,7 +2,7 @@
 /**
  ****************************************************************************************************
  * @file        rs485.c
- * @author      正点原子团队(ALIENTEK)
+ * @author      sjwu
  * @version     V1.0
  * @date        2025-01-01
  * @brief       RS485驱动代码
@@ -185,6 +185,16 @@ int modbus_parse_frame(const uint8_t *rx_buf, uint8_t rx_len,
     } else if (*reg_addr == MODBUS_REG_VOLUME) {
         /* 音量控制区: 数据范围 0x0000 ~ 0x0021 (0~33) */
         if (*reg_data > 0x0021) {
+            goto exception_illegal_data;
+        }
+    } else if (*reg_addr == MODBUS_REG_CMD) {
+        /* 炒菜机综合命令区: 0x0201 */
+        if (*reg_data > 0xFF) {
+            goto exception_illegal_data;
+        }
+    } else if (*reg_addr >= MODBUS_REG_BOX1_STATUS && *reg_addr <= MODBUS_REG_BOX3_STATUS) {
+        /* 菜盒状态寄存器: 0x0202~0x0204 */
+        if (*reg_data > BOX_VAL_POURING) {
             goto exception_illegal_data;
         }
     } else {
