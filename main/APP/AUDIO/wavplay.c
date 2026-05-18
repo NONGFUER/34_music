@@ -23,6 +23,7 @@
 #include "esp_adc/adc_oneshot.h"
 #include "es8388.h"
 #include "audioplay.h"
+#include "cook_ui.h"
 
 /* ================================================================== */
 /*                      FreeRTOS任务配置                               */
@@ -31,7 +32,11 @@
 #define MUSIC_PRIO       4                   /* 音乐播放任务优先级 */
 #define MUSIC_STK_SIZE   (5 * 1024)          /* 音乐任务堆栈大小 */
 
-static TaskHandle_t s_music_task_handle = NULL;   /* 音乐任务句柄(NULL=未创建/已销毁) */
+#define MONITOR_PRIO     3                   /* 播放监控任务优先级(与RS485同级, 高于主循环) */
+#define MONITOR_STK_SIZE (2 * 1024)          /* 监控任务堆栈(仅轮询检测, 不需要大栈) */
+
+static TaskHandle_t s_music_task_handle  = NULL;   /* 音乐任务句柄(NULL=未创建/已销毁) */
+static TaskHandle_t s_monitor_task_handle = NULL;  /* 播放监控任务句柄(NULL=未运行) */
 
 void music(void *pvParameters);             /* 音乐任务函数声明 */
 
@@ -205,8 +210,11 @@ void music(void *pvParameters)
     es8388_adda_cfg(1, 0);                            /* 开启DAC, 关闭ADC */
     es8388_input_cfg(0);                              /* 关闭录音通路 */
     es8388_output_cfg(1, 1);                          /* 同时开启喇叭和耳机通道 */
-    es8388_hpvol_set(33);                             /* 耳机音量(0~33, 默认最大) */
-    es8388_spkvol_set(20);                            /* 喇叭音量(供外部功放, 留余量防止过载) */
+
+    /* 使用RS485持久化音量(每次播放不再被硬编码覆盖) */
+    uint8_t vol = audio_get_last_volume();
+    es8388_hpvol_set(vol);                            /* 耳机音量 */
+    es8388_spkvol_set(vol);                           /* 喇叭音量 */
     vTaskDelay(pdMS_TO_TICKS(20));                    /* 等待ES8388内部寄存器配置稳定 */
 
     /* ===== 阶段2: I2S预填充静音数据(POP音消除核心) ===== */
@@ -218,19 +226,39 @@ void music(void *pvParameters)
 
     /* ===== 阶段4: 主播放循环 ===== */
     while (1) {
+        /* ★ 外部停止安全出口: 无论当前处于什么状态(播放/暂停/空闲),
+         *   收到停止信号都立即释放I2S资源并退出, 避免卡在暂停死循环中导致资源泄漏 ★ */
+        if (i2s_play_next_prev == ESP_OK || i2s_play_end == ESP_OK) {
+            audio_stop();                           /* 停止I2S DMA */
+            i2s_deinit();                           /* 卸载I2S外设(释放控制器, 允许下次重新初始化) */
+            i2s_table_size    = 0;
+            i2s_play_end      = ESP_OK;             /* 标记播放结束 */
+            s_music_task_handle = NULL;             /* 清除句柄(允许下次重新创建任务) */
+            vTaskDelete(NULL);                      /* 销毁自身 */
+        }
+
         if ((g_audiodev.status & 0x0F) == 0x03) {    /* 状态=0x03 → 播放中 */
             uint32_t total_read = 0;
 
             /* 循环读取WAV数据块并送入I2S, 直到文件读完或收到停止指令 */
             while (total_read < wavctrl.datasize) {
 
-                /* ---- 暂停处理 ---- */
+                /* ---- 暂停处理(带停止信号检测, 防止永久卡死) ---- */
                 if ((g_audiodev.status & 0x0F) == 0x00) {
                     file_read_pos = f_tell(g_audiodev.file);   /* 记录暂停位置 */
 
-                    /* 阻塞等待恢复播放(轮询间隔5ms, 平衡响应速度与CPU占用) */
+                    /* 阻塞等待恢复播放或停止信号(轮询间隔5ms) */
                     while ((g_audiodev.status & 0x0F) != 0x03) {
+                        /* 收到外部停止信号 → 跳出暂停等待, 由外层循环统一处理资源释放 */
+                        if (i2s_play_next_prev == ESP_OK || i2s_play_end == ESP_OK) {
+                            break;
+                        }
                         vTaskDelay(pdMS_TO_TICKS(5));
+                    }
+
+                    /* 停止信号触发则跳出数据读取循环, 交由外层处理 */
+                    if (i2s_play_next_prev == ESP_OK || i2s_play_end == ESP_OK) {
+                        break;
                     }
 
                     f_lseek(g_audiodev.file, file_read_pos);   /* 跳回暂停位置继续 */
@@ -303,26 +331,128 @@ void music(void *pvParameters)
 }
 
 /* ================================================================== */
+/*                 播放监控任务 (FreeRTOS, 异步非阻塞)                     */
+/**
+ * @brief  播放监控任务 — 从 wav_play_song() 的监控循环独立出来
+ *
+ * @note   ★★★ 异步化核心 ★★★
+ *         原 design: wav_play_song() 内的 while(1) 监控循环阻塞调用方(audio_play → main loop)
+ *         新 design: 监控逻辑移到此独立任务, wav_play_song() 启动后立即返回
+ *
+ *         监控职责:
+ *         - 检测播放自然结束 (i2s_play_end)
+ *         - 本地按键扫描 (切歌/暂停)
+ *         - RS485音量实时响应
+ *         - 播放进度显示
+ *         - 资源释放 + 自删除
+ *
+ * @param pvParameters  未使用(FreeRTOS任务签名要求)
+ */
+static void play_monitor_task(void *pvParameters)
+{
+    (void)pvParameters;
+    uint8_t key = 0;
+    uint8_t res = FR_OK;
+
+    printf("[MONITOR] Task started, monitoring playback...\r\n");
+
+    /* ===== 监控主循环 (原 wav_play_song 步骤7) ===== */
+    while (res == FR_OK) {
+        while (1) {
+            /* -- 检测播放是否自然结束(music任务自删除时设置此标志) -- */
+            if (i2s_play_end == ESP_OK) {
+                key = KEY0_PRES;     /* 结束视为"下一首" */
+                printf("[MONITOR] Playback natural end\r\n");
+                break;
+            }
+
+            /* -- 本地按键扫描 -- */
+            key = xl9555_key_scan(0);
+            switch (key) {
+                case KEY0_PRES:       /* 下一首 */
+                case KEY1_PRES:       /* 上一首 */
+                    i2s_play_next_prev = ESP_OK;   /* 通知music任务退出 */
+                    printf("[MONITOR] Key skip song\r\n");
+                    break;
+
+                case KEY2_PRES:       /* 暂停/恢复切换 */
+                    if ((g_audiodev.status & 0x0F) == 0x03) {
+                        audio_stop();                  /* 正在播放 -> 暂停 */
+                        printf("[MONITOR] Key pause\r\n");
+                    } else if ((g_audiodev.status & 0x0F) == 0x00) {
+                        audio_start();                 /* 已暂停 -> 恢复 */
+                        printf("[MONITOR] Key resume\r\n");
+                    }
+                    break;
+
+                default:
+                    break;
+            }
+
+            /* -- 仅在播放状态下刷新进度显示(暂停时不更新) -- */
+            if ((g_audiodev.status & 0x0F) == 0x03) {
+                wav_get_curtime(g_audiodev.file, &wavctrl);
+                audio_msg_show(wavctrl.totsec, wavctrl.cursec, wavctrl.bitrate);
+            }
+
+            /* -- RS485音量控制: 播放期间实时响应 -- */
+            if (rs485_volume_flag && rs485_volume_val <= 33) {
+                es8388_hpvol_set(rs485_volume_val);
+                es8388_spkvol_set(rs485_volume_val);
+                rs485_volume_flag = 0;
+                rs485_volume_val  = 0xFF;
+            }
+
+            vTaskDelay(pdMS_TO_TICKS(10));    /* 100Hz轮询频率 */
+        }
+
+        /* 有切歌键按下则退出 */
+        if (key == KEY0_PRES || key == KEY1_PRES) {
+            res = key;
+            break;
+        }
+    }
+
+    /* ===== 统一资源释放(原 wavplay.c cleanup 块) ===== */
+    printf("[MONITOR] Cleanup: freeing resources\r\n");
+
+    if (g_audiodev.file) { heap_caps_free(g_audiodev.file); g_audiodev.file = NULL; }
+    if (g_audiodev.tbuf) { heap_caps_free(g_audiodev.tbuf); g_audiodev.tbuf = NULL; }
+    s_music_task_handle  = NULL;
+    s_monitor_task_handle = NULL;
+
+    /* 通知 cook_ui: 播放停止 */
+    cook_audio_set_playing(0);
+    g_cook_status->audio.song_index = 0;
+    g_cook_status->audio.changed = 1;
+
+    printf("[MONITOR] Task exiting (resources freed)\r\n");
+    vTaskDelete(NULL);              /* 自删除 */
+}
+
+/* ================================================================== */
 /*                    WAV歌曲播放控制器                                */
 /**
- * @brief 播放指定WAV文件的完整流程管理
+ * @brief 播放指定WAV文件 — 异步非阻塞版本
  * @param fname  文件完整路径(如 "0:/MUSIC/song.wav")
  * @return
- *         KEY0_PRES  - 下一首(用户按键或播放结束后自动触发)
- *         KEY1_PRES  - 上一首
+ *         KEY0_PRES  - 播放已启动(异步, 实际播放由monitor+music任务完成)
  *         0xFF       - 错误(文件打开失败/非WAV/解码失败等)
  *
- * @note  流程:
+ * @note  V3.0 异步化重构:
+ *        原 design: 函数内部包含监控循环, 阻塞调用方直到播放结束
+ *        新 design: 仅做初始化 + 启动任务, 立即返回(耗时 <100ms)
+ *
+ *        流程:
  *        1. 分配DMA内存(file句柄 + 音频缓冲区)
  *        2. 解析WAV头部获取格式参数
  *        3. 按参数重新初始化I2S外设
  *        4. 同步ES8388 DAC位宽设置
- *        5. 打开WAV文件 → 启动I2S → 创建music任务 → 监控按键/RS485
- *        6. 播放结束或切歌 → 清理资源 → 返回
- * ================================================================== */
+ *        5. 打开WAV文件 → 启动I2S → 创建music任务 → 创建监控任务 → 返回!
+ *        6. 监控任务异步处理: 结束检测/按键/音量/资源释放
+ ================================================================== */
 uint8_t wav_play_song(uint8_t *fname)
 {
-    uint8_t key = 0;
     uint8_t res = 0;
 
     /* 重置播放状态标志 */
@@ -392,85 +522,57 @@ uint8_t wav_play_song(uint8_t *fname)
     /* ★ 步骤6: 启动I2S传输 + 创建播放任务 */
     audio_start();
 
-    /* 确保上一次的任务已被清理(防御重复创建) */
+    /* 防御性清理上一次残留的任务句柄 */
     if (s_music_task_handle != NULL) {
-        printf("[WAV] WARN: previous task still exists, cleaning up\r\n");
+        printf("[WAV] WARN: previous music task handle not null\r\n");
         s_music_task_handle = NULL;
     }
+    if (s_monitor_task_handle != NULL) {
+        printf("[WAV] WARN: previous monitor task still exists\r\n");
+        s_monitor_task_handle = NULL;
+    }
 
+    /* 创建 music 任务(I2S数据馈送, prio=4最高) */
     {
         BaseType_t ret = xTaskCreate(music, "music", MUSIC_STK_SIZE,
                                      NULL, MUSIC_PRIO, &s_music_task_handle);
         if (ret != pdPASS) {
-            printf("[WAV] ERR: xTaskCreate failed (%ld)\r\n", (long)ret);
+            printf("[WAV] ERR: xTaskCreate music failed (%ld)\r\n", (long)ret);
             audio_stop();
+            i2s_deinit();
             goto cleanup;
         }
     }
 
-    /* ★★★ 关键优化: 此时music任务已启动(音频即将响), 异步触发封面加载,
-     *     封面解码+SPI刷屏由独立低优先级任务(prio=2)在CPU空闲时执行,
-     *     完全不抢music任务(prio=4)的DMA带宽, 从根因解决音画不同步! */
+    /* ★★★ V3.0核心: 异步触发封面加载 + 创建监控任务, 立即返回! ★★★ */
+
+    /* 异步封面加载(低优先级任务, 不抢DMA带宽) */
     audio_load_cover_async(g_current_song_index);
 
-    /* ★ 步骤7: 播放监控循环(检测结束/按键/RS485指令) */
-    while (res == FR_OK) {
-        while (1) {
-            /* -- 检测播放是否自然结束 -- */
-            if (i2s_play_end == ESP_OK) {
-                key = KEY0_PRES;     /* 结束视为"下一首" */
-                break;
-            }
-
-            /* -- 本地按键扫描 -- */
-            key = xl9555_key_scan(0);
-            switch (key) {
-                case KEY0_PRES:       /* 下一首 */
-                case KEY1_PRES:       /* 上一首 */
-                    i2s_play_next_prev = ESP_OK;   /* 通知music任务退出 */
-                    break;
-
-                case KEY2_PRES:       /* 暂停/恢复切换 */
-                    if ((g_audiodev.status & 0x0F) == 0x03) {
-                        audio_stop();                  /* 正在播放 → 暂停 */
-                    } else if ((g_audiodev.status & 0x0F) == 0x00) {
-                        audio_start();                 /* 已暂停 → 恢复 */
-                    }
-                    break;
-
-                default:
-                    break;
-            }
-
-            /* -- 仅在播放状态下刷新进度显示(暂停时不更新) -- */
-            if ((g_audiodev.status & 0x0F) == 0x03) {
-                wav_get_curtime(g_audiodev.file, &wavctrl);
-                audio_msg_show(wavctrl.totsec, wavctrl.cursec, wavctrl.bitrate);
-            }
-
-            /* -- RS485音量控制: 播放期间实时响应(无10ms延迟) -- */
-            if (rs485_volume_flag && rs485_volume_val <= 33) {
-                es8388_hpvol_set(rs485_volume_val);
-                es8388_spkvol_set(rs485_volume_val);
-                rs485_volume_flag = 0;
-                rs485_volume_val  = 0xFF;
-            }
-
-            vTaskDelay(pdMS_TO_TICKS(10));    /* 100Hz轮询频率, 平衡响应速度与CPU占用 */
-        }
-
-        /* 有切歌键按下则立即返回对应键值 */
-        if (key == KEY0_PRES || key == KEY1_PRES) {
-            res = key;
-            break;
+    /* 创建监控任务(独立于主循环, 处理结束检测/按键/音量/资源释放) */
+    {
+        BaseType_t ret = xTaskCreate(play_monitor_task, "wav_mon",
+                                     MONITOR_STK_SIZE, NULL,
+                                     MONITOR_PRIO, &s_monitor_task_handle);
+        if (ret != pdPASS) {
+            printf("[WAV] WARN: xTaskCreate monitor failed (%ld), sync fallback\r\n", (long)ret);
+            /* 监控任务创建失败: music任务仍会自行检测停止信号并退出,
+               但资源释放需等下次调用或手动清理 */
+            s_monitor_task_handle = NULL;
         }
     }
 
+    printf("[WAV] Playback started ASYNC (music+prio%d monitor+prio%d)\r\n",
+           MUSIC_PRIO, MONITOR_PRIO);
+
+    /* ★ 立即返回! 主循环不再阻塞! ★ */
+    return KEY0_PRES;
+
 cleanup:
-    /* ★ 统一资源释放(无论成功/失败都执行) */
+    /* 初始化阶段失败时统一释放 */
     if (g_audiodev.file) { heap_caps_free(g_audiodev.file); g_audiodev.file = NULL; }
     if (g_audiodev.tbuf) { heap_caps_free(g_audiodev.tbuf); g_audiodev.tbuf = NULL; }
-    s_music_task_handle = NULL;
-
-    return (res == FR_OK) ? KEY0_PRES : res;
+    s_music_task_handle   = NULL;
+    s_monitor_task_handle = NULL;
+    return 0xFF;
 }

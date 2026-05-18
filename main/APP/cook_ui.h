@@ -19,7 +19,7 @@
 /* ================================================================== */
 
 #define BOX_COUNT           3       /* 菜盒数量 */
-#define VOICE_TOTAL         9       /* 语音总数 */
+#define VOICE_TOTAL         9       /* 语音总数(缺002.wav: 1+8=9) */
 #define ICON_SIZE           40      /* 状态图标尺寸 40×40 */
 
 /* ---- 原水平布局(待机模式保留) ---- */
@@ -50,15 +50,15 @@ typedef enum {
 } cook_sys_state_e;
 
 typedef enum {
-    VOICE_BOOT          = 1,
-    VOICE_POUR1         = 2,
-    VOICE_POUR2         = 3,
-    VOICE_POUR3         = 4,
-    VOICE_RESET         = 5,
-    VOICE_START         = 6,
-    VOICE_FINISH        = 7,
-    VOICE_ALARM_TEMP    = 8,
-    VOICE_ALARM_FIRE    = 9,
+    VOICE_BOOT           = 1,   /* 001.wav - 目录第1位 */
+    VOICE_POUR1          = 2,   /* 003.wav - 目录第2位(缺002) */
+    VOICE_POUR2          = 3,   /* 004.wav - 目录第3位 */
+    VOICE_POUR3          = 4,   /* 005.wav - 目录第4位 */
+    VOICE_BOX_RETURN     = 5,   /* 006.wav - 目录第5位 */
+    VOICE_START_COOK     = 6,   /* 007.wav - 目录第6位 */
+    VOICE_FINISH         = 7,   /* 008.wav - 目录第7位 */
+    VOICE_ALARM_TEMP     = 8,   /* 009.wav - 目录第8位 */
+    VOICE_ALARM_FIRE     = 9,   /* 010.wav - 目录第9位 */
 } voice_id_e;
 
 /* ================================================================== */
@@ -105,28 +105,12 @@ extern cook_status_t *g_cook_status;
 /*                       MODBUS 协议扩展                               */
 /* ================================================================== */
 
-#ifndef MODBUS_REG_SONG_FIRST
-#define MODBUS_REG_SONG_FIRST    0x0001
+#ifndef REG_COOK_FIRST
+#define REG_COOK_FIRST         0x0001
 #endif
-
-#define MODBUS_REG_CMD           0x0201
-#define MODBUS_REG_BOX1_STATUS   0x0202
-#define MODBUS_REG_BOX2_STATUS   0x0203
-#define MODBUS_REG_BOX3_STATUS   0x0204
-
-#define CMD_POUR_BOX1       0x01
-#define CMD_POUR_BOX2       0x02
-#define CMD_POUR_BOX3       0x03
-#define CMD_RESET           0x05
-#define CMD_START_COOK      0x06
-#define CMD_FINISH          0x07
-#define CMD_ALARM_TEMP      0x10
-#define CMD_ALARM_FIRE      0x11
-#define CMD_IDLE            0xFF
-
-#define BOX_VAL_READY       0x00
-#define BOX_VAL_DONE        0x01
-#define BOX_VAL_POURING     0x02
+#ifndef REG_COOK_LAST
+#define REG_COOK_LAST          0x000A
+#endif
 
 /* ================================================================== */
 /*                       SD卡资源文件名                                */
@@ -141,6 +125,9 @@ extern cook_status_t *g_cook_status;
 #define BG_FILE_DONE        "0:/PICTURE/bg_done.bmp"
 #define BG_FILE_ALARM_TEMP  "0:/PICTURE/bg_alarm_temp.bmp"
 #define BG_FILE_ALARM_FIRE  "0:/PICTURE/bg_alarm_fire.bmp"
+#define BG_FILE_POUR1_DONE "0:/PICTURE/bg_pour1_done.bmp"   /* 一号菜归位完成 */
+#define BG_FILE_POUR2_DONE "0:/PICTURE/bg_pour2_done.bmp"   /* 二号菜归位完成 */
+#define BG_FILE_POUR3_DONE "0:/PICTURE/bg_pour3_done.bmp"   /* 三号菜归位完成 */
 
 /* ================================================================== */
 /*                          函数声明                                   */
@@ -172,6 +159,12 @@ void cook_cmd_finish(void);
 void cook_cmd_alarm_temp(void);
 void cook_cmd_alarm_fire(void);
 void cook_cmd_idle(void);
+void cook_cmd_boot(void);                              /* 开机(自动播放+待机) */
+void cook_cmd_box_return(uint8_t box_id);              /* 菜盒归位(box_id:1~3) */
+void cook_cmd_stop_voice(void);                        /* 停止播报(停语音+停报警,界面不变) */
+void cook_alarm_stop(void);                            /* 停止报警循环 */
+uint8_t  cook_is_alarm_loop(void);                     /* 查询报警循环是否激活 */
+uint8_t  cook_alarm_voice_index(void);                 /* 获取当前报警语音编号 */
 
 void cook_alarm_flash_task(void *arg);
 

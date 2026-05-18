@@ -127,7 +127,7 @@ uint8_t bmp_decode(const char *filename, int width, int height)
         x_offset = x_offset < 0 ? 0 : x_offset;
         y_offset = y_offset < 0 ? 0 : y_offset;
 
-        uint8_t *sdbuffer = (uint8_t *)calloc(3 * w, MALLOC_CAP_DMA);
+        uint8_t *sdbuffer = (uint8_t *)calloc(rowSize, MALLOC_CAP_DMA);
         if (sdbuffer == NULL)
         {
             ESP_LOGE(__FUNCTION__, "Failed to allocate memory for sdbuffer");
@@ -138,19 +138,23 @@ uint8_t bmp_decode(const char *filename, int width, int height)
             return PIC_MEM_ERR;
         }
 
-        /* 读取像素数据 */
-        for (int row = 0; row <= h; row++)
+        /* 读取像素数据: 只seek一次到数据起点, 之后顺序读取避免逐行lseek开销 */
+        uint32_t data_pos = hbmp->bmfHeader.bfOffBits;
+        f_lseek(f_bmp, data_pos);
+
+        for (int row = 0; row < h; row++)
         {
-            int pos = hbmp->bmfHeader.bfOffBits + (h - 1 - row) * rowSize;
-            f_lseek(f_bmp, pos);
-            f_read(f_bmp, sdbuffer, 3 * w, &br);
+            /* BMP是bottom-up存储, 写入colors时逆序 */
+            int dst_row = h - 1 - row;
+
+            f_read(f_bmp, sdbuffer, rowSize, &br);
             
-            for (int col = 0; col <= w; col++)
+            for (int col = 0; col < w; col++)
             {
                 uint8_t b = sdbuffer[col * 3];
                 uint8_t g = sdbuffer[col * 3 + 1];
                 uint8_t r = sdbuffer[col * 3 + 2];
-                colors[row * w + col] = rgb565(r, g, b); /* RGB到RGB565转换 */
+                colors[dst_row * w + col] = rgb565(r, g, b); /* RGB到RGB565转换 */
             }
         }
 

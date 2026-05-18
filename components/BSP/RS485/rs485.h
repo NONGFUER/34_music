@@ -41,37 +41,25 @@
 #define MODBUS_SLAVE_ADDR        0x11    /* 从机地址 */
 #define MODBUS_FUNC_WRITE_REG    0x06    /* 功能码: 写单个寄存器 */
 
-/* 寄存器地址映射 */
-#define MODBUS_REG_SONG_FIRST    0x0001  /* 第1首 */
-#define MODBUS_REG_SONG_LAST     0x00FF  /* 第255首 */
+/* 寄存器地址映射 (地址即语义, 数据区控制行为) */
+#define REG_BOOT               0x0001  /* 开机 */
+#define REG_POUR_BOX1          0x0003  /* 倒一号菜 */
+#define REG_POUR_BOX2          0x0004  /* 倒二号菜 */
+#define REG_POUR_BOX3          0x0005  /* 倒三号菜 */
+#define REG_BOX_RETURN         0x0006  /* 数据区: 1=一号归位, 2=二号, 3=三号 */
+#define REG_START_COOK         0x0007  /* 开始炒菜 */
+#define REG_FINISH             0x0008  /* 炒菜完成 */
+#define REG_ALARM_TEMP         0x0009  /* 温度异常(循环播报) */
+#define REG_ALARM_FIRE         0x000A  /* 火警(循环播报) */
 
-#define MODBUS_REG_VOLUME        0x0100  /* 音量寄存器 */
+#define REG_COOK_FIRST         0x0001  /* 命令区起始地址 */
+#define REG_COOK_LAST          0x000A  /* 命令区结束地址 */
 
-/* ========================= 炒菜机UI扩展 ========================= */
-#define MODBUS_REG_CMD           0x0201  /* 综合命令寄存器 */
-#define MODBUS_REG_BOX1_STATUS   0x0202  /* 菜盒1状态 */
-#define MODBUS_REG_BOX2_STATUS   0x0203  /* 菜盒2状态 */
-#define MODBUS_REG_BOX3_STATUS   0x0204  /* 菜盒3状态 */
+#define MODBUS_REG_VOLUME      0x0100  /* 音量寄存器 */
 
-/* 综合命令有效值 */
-#define CMD_POUR_BOX1       0x01    /* 一号投料 */
-#define CMD_POUR_BOX2       0x02    /* 二号投料 */
-#define CMD_POUR_BOX3       0x03    /* 三号投料 */
-#define CMD_RESET           0x05    /* 投料盒归位 */
-#define CMD_START_COOK      0x06    /* 炒菜开始 */
-#define CMD_FINISH          0x07    /* 炒菜完成 */
-#define CMD_ALARM_TEMP      0x10    /* 温度异常 */
-#define CMD_ALARM_FIRE      0x11    /* 火警 */
-#define CMD_IDLE            0xFF    /* 复位待机 */
-
-/* 菜盒状态值 */
-#define BOX_VAL_READY       0x00    /* 就绪 */
-#define BOX_VAL_DONE        0x01    /* 完成 */
-#define BOX_VAL_POURING     0x02    /* 倒菜中 */
-
-/* 数据区有效值 (播放控制) */
-#define MODBUS_VAL_STOP          0x0000  /* 停止/暂停 */
-#define MODBUS_VAL_PLAY          0x0001  /* 播放/恢复播放 */
+/* 命令区数据区有效值 */
+#define MODBUS_VAL_CMD_TRIGGER 0x0001  /* 触发命令(播放语音/执行功能) */
+#define MODBUS_VAL_CMD_STOP    0x0000  /* 停止播报(停止当前语音+报警循环,界面不变) */
 
 /* 异常码 */
 #define MODBUS_EX_ILLEGAL_FUNC   0x01    /* 非法功能码 */

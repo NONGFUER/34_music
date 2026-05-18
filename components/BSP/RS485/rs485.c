@@ -131,7 +131,9 @@ uint16_t modbus_crc16(const uint8_t *buf, uint8_t len)
 /**
  * @brief MODBUS RTU 请求帧解析 + 响应帧构建
  * @note  仅处理功能码 0x06 (写单个寄存器)
- *        - 播放控制区 0x0001~0x00FF: 数据 0001=播放 / 0000=停止
+ *        V2: 地址即语义模式
+ *        - 炒菜机命令区 0x0001~0x000A: 数据值无限制, 写入即触发
+ *          (其中 0x0006=归位, 数据区值区分box_id: 1/2/3)
  *        - 音量控制区 0x0100: 数据 0000~0021
  */
 int modbus_parse_frame(const uint8_t *rx_buf, uint8_t rx_len,
@@ -177,24 +179,11 @@ int modbus_parse_frame(const uint8_t *rx_buf, uint8_t rx_len,
     *reg_data = ((uint16_t)rx_buf[4] << 8) | rx_buf[5];
 
     /* ---- 6. 验证寄存器地址和数据 ---- */
-    if (*reg_addr >= MODBUS_REG_SONG_FIRST && *reg_addr <= MODBUS_REG_SONG_LAST) {
-        /* 播放控制区: 数据必须是 0x0000(停止) 或 0x0001(播放) */
-        if (*reg_data != MODBUS_VAL_STOP && *reg_data != MODBUS_VAL_PLAY) {
-            goto exception_illegal_data;
-        }
+    if (*reg_addr >= REG_COOK_FIRST && *reg_addr <= REG_COOK_LAST) {
+        /* 炒菜机命令区: 数据 0x0000=停止播报, 非0=触发命令(具体值由各命令解释) */
     } else if (*reg_addr == MODBUS_REG_VOLUME) {
         /* 音量控制区: 数据范围 0x0000 ~ 0x0021 (0~33) */
         if (*reg_data > 0x0021) {
-            goto exception_illegal_data;
-        }
-    } else if (*reg_addr == MODBUS_REG_CMD) {
-        /* 炒菜机综合命令区: 0x0201 */
-        if (*reg_data > 0xFF) {
-            goto exception_illegal_data;
-        }
-    } else if (*reg_addr >= MODBUS_REG_BOX1_STATUS && *reg_addr <= MODBUS_REG_BOX3_STATUS) {
-        /* 菜盒状态寄存器: 0x0202~0x0204 */
-        if (*reg_data > BOX_VAL_POURING) {
             goto exception_illegal_data;
         }
     } else {

@@ -16,6 +16,7 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "esp_timer.h"
 #include "nvs_flash.h"
 #include "driver/adc.h"
 #include "esp_adc/adc_oneshot.h"
@@ -52,15 +53,14 @@ adc_oneshot_unit_handle_t adc1_handle = NULL;
 /**
  * @brief RS485接收任务 - 解析MODBUS RTU请求帧, 发送响应, 设置全局命令变量
  *
- * ★ MODBUS RTU 协议 (从机地址 0x11, 功能码 0x06) ★
+ * ★ MODBUS RTU 协议 V2 (从机地址 0x11, 功能码 0x06) ★
  * ┌──────────────────────────────────────────────────────────────────────┐
  * │ 帧格式: [0x11][0x06][REG_HI][REG_LO][DATA_HI][DATA_LO][CRC_LO][CRC_HI] │
  * │                                                                     │
- * │ 寄存器 0x0001~0x00FF → 一首歌一个地址:                             │
- * │   写入 0x0001 = 播放 / 0x0000 = 停止                                │
- * │                                                                     │
- * │ 寄存器 0x0100 → 音量:                                               │
- * │   写入 0x0000~0x0021 = 音量0~33                                     │
+ * │ 地址即语义: 每个功能一个独立寄存器地址                              │
+ * │   0x0001=开机  0x0003~05=倒菜  0x0006=归位  0x0007=炒菜            │
+ * │   0x0008=完成  0x0009=温度异常  0x000A=火警                         │
+ * │   0x0100=音量                                                       │
  * └──────────────────────────────────────────────────────────────────────┘
  *
  * @param arg  未使用(FreeRTOS任务函数签名要求)
@@ -88,52 +88,72 @@ static void rs485_task(void *arg)
                 rs485_send_data(tx_buf, tx_len);
             }
 
-            /* 命令分派: 有效命令由主任务在主循环中执行 */
+            /* ★ V2: 地址即语义分发模式 ★ */
             if (ret == 0) {
+                int64_t cmd_ts = esp_timer_get_time();   /* 命令到达时间戳(微秒) */
                 if (reg_addr == MODBUS_REG_VOLUME) {
                     /* 音量控制 */
                     rs485_volume_val  = (uint8_t)reg_data;
                     rs485_volume_flag = 1;
-                    printf("[RS485] VOL: %d/33\r\n", (uint8_t)reg_data);
+                    printf("[RS485] VOL: %d/33 @%lld us\r\n", (uint8_t)reg_data, cmd_ts);
                 }
-                else if (reg_addr >= MODBUS_REG_SONG_FIRST && reg_addr <= MODBUS_REG_SONG_LAST) {
-                    if (reg_data == MODBUS_VAL_PLAY) {
-                        /* 播放某首歌: 中断当前播放 + 标记新命令 */
-                        rs485_target_index = (uint8_t)reg_addr;
-                        rs485_cmd_flag = 1;
-                        i2s_play_next_prev = ESP_OK;
-                        printf("[RS485] PLAY: song #%d\r\n", (uint8_t)reg_addr);
+                else if (reg_addr >= REG_COOK_FIRST && reg_addr <= REG_COOK_LAST) {
+                    /* ===== 炒菜机命令: 数据区 0x0000 = 停止播报 ===== */
+                    if (reg_data == 0x0000) {
+                        cook_cmd_stop_voice();
+                        printf("[RS485] STOP voice (keep scene) @%lld us\r\n", cmd_ts);
+                        continue;   /* ★ 停止后跳过switch, 防止又重播 */
                     }
-                    else /* MODBUS_VAL_STOP */ {
-                        /* 停止: 仅中断当前播放, 不标记新命令(避免触发新一轮播放) */
-                        i2s_play_next_prev = ESP_OK;
-                        printf("[RS485] STOP\r\n");
+
+                    /* ===== 数据非0 → 按地址分发触发命令 (仅0x0001有效) ===== */
+                    if (reg_data != 0x0001 && reg_addr != REG_BOX_RETURN) {
+                        printf("[RS485] CMD ignored: addr=0x%04X data=0x%04X (need 0x0001) @%lld us\r\n",
+                               reg_addr, reg_data, cmd_ts);
                     }
-                }
-                /* ==================== 炒菜机UI命令分派 ==================== */
-                else if (reg_addr == MODBUS_REG_CMD) {
-                    /* 综合命令: 自动联动UI+语音+背景 */
-                    switch (reg_data) {
-                        case CMD_POUR_BOX1:  cook_cmd_pour_box(1); break;
-                        case CMD_POUR_BOX2:  cook_cmd_pour_box(2); break;
-                        case CMD_POUR_BOX3:  cook_cmd_pour_box(3); break;
-                        case CMD_RESET:      cook_cmd_reset();    break;
-                        case CMD_START_COOK: cook_cmd_start();    break;
-                        case CMD_FINISH:     cook_cmd_finish();   break;
-                        case CMD_ALARM_TEMP: cook_cmd_alarm_temp(); break;
-                        case CMD_ALARM_FIRE: cook_cmd_alarm_fire(); break;
-                        case CMD_IDLE:       cook_cmd_idle();     break;
+                    else switch (reg_addr) {
+                        case REG_BOOT:
+                            cook_cmd_boot();
+                            break;
+
+                        case REG_POUR_BOX1:
+                            cook_cmd_pour_box(1);
+                            break;
+                        case REG_POUR_BOX2:
+                            cook_cmd_pour_box(2);
+                            break;
+                        case REG_POUR_BOX3:
+                            cook_cmd_pour_box(3);
+                            break;
+
+                        case REG_BOX_RETURN:
+                            /* 数据区区分归位的是哪个菜盒: 1=一号, 2=二号, 3=三号 */
+                            if (reg_data >= 1 && reg_data <= 3) {
+                                cook_cmd_box_return((uint8_t)reg_data);
+                            } else {
+                                printf("[RS485] BOX_RETURN bad data: %d\r\n", reg_data);
+                            }
+                            break;
+
+                        case REG_START_COOK:
+                            cook_cmd_start();
+                            break;
+
+                        case REG_FINISH:
+                            cook_cmd_finish();
+                            break;
+
+                        case REG_ALARM_TEMP:
+                            cook_cmd_alarm_temp();
+                            break;
+
+                        case REG_ALARM_FIRE:
+                            cook_cmd_alarm_fire();
+                            break;
+
                         default:
-                            printf("[RS485] Unknown CMD: 0x%02X\r\n", reg_data);
+                            printf("[RS485] Unknown CMD addr: 0x%04X @%lld us\r\n", reg_addr, cmd_ts);
                             break;
                     }
-                }
-                else if (reg_addr >= MODBUS_REG_BOX1_STATUS && reg_addr <= MODBUS_REG_BOX3_STATUS) {
-                    /* 独立菜盒状态变更(不触发语音) */
-                    uint8_t box_id = (uint8_t)(reg_addr - MODBUS_REG_BOX1_STATUS + 1);
-                    cook_box_status_e status = (cook_box_status_e)(uint8_t)reg_data;
-                    cook_set_box(box_id, status);
-                    printf("[RS485] BOX%d STATUS: %d\r\n", box_id, reg_data);
                 }
             }
 
@@ -297,6 +317,9 @@ void app_main(void)
     xTaskCreate(rs485_task, "rs485", RS485_TASK_STK_SIZE, NULL, RS485_TASK_PRIO, NULL);
     printf("[RS485] Receive task started\r\n");
 
+    /* ===== 阶段5.5: 开机自播(001.wav + 待机界面) ===== */
+    cook_cmd_boot();
+
     /* ===== 阶段6: 主事件循环 ===== */
     /**
      * @note  双模式操作:
@@ -309,39 +332,29 @@ void app_main(void)
      *        - V2.0索引缓存后, audio_play在非首次调用时 <100ms 即可进入播放
      */
     while (1) {
-        /* ---- A. 炒菜机UI渲染 (脏区检测, 10ms周期) ---- */
-        cook_render();
+        /* ---- A. RS485远程切歌 / 按键切歌 (最高优先级: 音频先启动) ---- */
+        if (rs485_cmd_flag && rs485_target_index > 0) {
+            printf("[MAIN] Starting song #%d (async)\r\n", rs485_target_index);
 
-        /* ---- B. 音量控制 (最高优先级, 无需等待播放状态) ---- */
+            /* ★ 调用播放入口(V3.0: 非阻塞, <100ms返回) ★ */
+            audio_play();
+
+            rs485_cmd_flag = 0;
+            local_song_index = rs485_target_index;
+        }
+
+        /* ---- B. 音量控制 ---- */
         if (rs485_volume_flag && rs485_volume_val <= 33) {
             es8388_hpvol_set(rs485_volume_val);
             es8388_spkvol_set(rs485_volume_val);
+            audio_set_last_volume(rs485_volume_val);
             printf("[MAIN] Volume -> %d/33\r\n", rs485_volume_val);
             rs485_volume_flag = 0;
-            rs485_volume_val  = 0xFF;       /* 标记无效, 防止重复处理 */
+            rs485_volume_val  = 0xFF;
         }
 
-        /* ---- C. RS485远程切歌 / 按键切歌 统一处理 ---- */
-        if (rs485_cmd_flag && rs485_target_index > 0) {
-            printf("[MAIN] Playing song #%d\r\n", rs485_target_index);
-
-            /* ★ 调用播放入口(V2.0: 内部有索引缓存快速路径) */
-            audio_play();
-
-            /* 播放结束清理 */
-            rs485_cmd_flag = 0;
-            local_song_index = rs485_target_index;
-
-            /* 通知 cook_ui: 停止播放状态 + 恢复背景(由cook_render统一渲染) */
-            cook_audio_set_playing(0);
-            g_cook_status->audio.song_index = 0;
-            g_cook_status->audio.changed = 1;
-            if (g_cook_status->sys_state == SYS_IDLE) {
-                cook_set_bg_scene(1);   /* 待机场景 → cook_render自动加载bg_standby */
-            } else {
-                cook_set_bg_scene(g_cook_status->bg_scene);  /* 炒菜机模式: 刷新当前场景 */
-            }
-        }
+        /* ---- C. 炒菜机UI渲染 (含背景图加载, 可能阻塞~200ms, 放最后执行) ---- */
+        cook_render();
 
         /* ---- D. 本地按键扫描 ---- */
         key = xl9555_key_scan(0);
@@ -371,6 +384,22 @@ void app_main(void)
 
             default:
                 break;
+        }
+
+        /* ---- E. 报警循环播报检测(温度异常/火警) ---- */
+        if (cook_is_alarm_loop()) {
+            static uint16_t alarm_cooldown = 0;
+            /* 上次播放已结束 + 冷却归零 + 当前未播放 → 重播 */
+            if (!rs485_cmd_flag && g_audiodev.status != 0x03 && alarm_cooldown == 0) {
+                uint8_t voice_idx = cook_alarm_voice_index();
+                if (voice_idx > 0) {
+                    rs485_target_index = voice_idx;
+                    rs485_cmd_flag     = 1;
+                    alarm_cooldown     = 50;   /* 500ms冷却(50×10ms), 避免连续触发 */
+                    printf("[MAIN] Alarm re-play voice #%d\r\n", voice_idx);
+                }
+            }
+            if (alarm_cooldown > 0) alarm_cooldown--;
         }
 
         vTaskDelay(pdMS_TO_TICKS(10));   /* 10ms主循环周期 */
