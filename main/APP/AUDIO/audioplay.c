@@ -21,6 +21,7 @@
 #include "rs485.h"
 #include "piclib.h"
 #include "es8388.h"
+#include "cook_ui.h"
 #include "freertos/semphr.h"
 
 /* ================================================================== */
@@ -162,9 +163,7 @@ static int audio_build_index(void)
     /* 步骤1: 打开MUSIC目录(带错误重试) */
     res = f_opendir(&wavdir, MUSIC_DIR_PATH);
     if (res != FR_OK) {
-        text_show_string(30, 190, 240, 16, "MUSIC文件夹错误!", 16, 0, BLUE);
-        vTaskDelay(200);
-        lcd_fill(30, 190, 240, 206, WHITE);
+        printf("[AUDIO] ERR: Cannot open " MUSIC_DIR_PATH " (%d)\r\n", res);
         return -1;
     }
 
@@ -182,9 +181,7 @@ static int audio_build_index(void)
         }
 
         if (count == 0) {
-            text_show_string(30, 190, 240, 16, "没有音乐文件!", 16, 0, BLUE);
-            vTaskDelay(200);
-            lcd_fill(30, 190, 240, 146, WHITE);
+            printf("[AUDIO] ERR: No valid audio files in " MUSIC_DIR_PATH "\r\n");
             return -2;
         }
 
@@ -204,9 +201,7 @@ static int audio_build_index(void)
     }
 
     if (!s_offset_table || !s_fileinfo || !s_path_buf) {
-        text_show_string(30, 190, 240, 16, "内存分配失败!", 16, 0, BLUE);
-        vTaskDelay(200);
-        lcd_fill(30, 190, 240, 146, WHITE);
+        printf("[AUDIO] ERR: Memory allocation failed\r\n");
         /* 释放可能部分成功的分配 */
         if (s_offset_table) { free(s_offset_table); s_offset_table = NULL; }
         if (s_fileinfo)    { free(s_fileinfo);    s_fileinfo = NULL; }
@@ -264,50 +259,26 @@ static void audio_free_index(void)
 }
 
 /* ================================================================== */
-/*                         UI显示                                      */
+/*                         UI显示 → cook_ui接管                         */
 /* ================================================================== */
 
 /**
- * @brief 显示曲目索引信息 (如 "003 / 015")
- * @param index  当前曲目序号(1-based)
- * @param total  曲目总数
+ * @brief [已废弃] 原LCD显示函数, 现由 cook_ui 统一渲染
+ * @note  保留空实现以兼容可能的外部调用, 实际渲染在 cook_draw_audio_info()
  */
 void audio_index_show(uint16_t index, uint16_t total)
 {
-    lcd_show_num(30 + 0, 230, index, 3, 16, RED);
-    lcd_show_char(30 + 24, 230, '/', 16, 0, RED);
-    lcd_show_num(30 + 32, 230, total, 3, 16, RED);
+    cook_audio_update(index, total, 0, 0, 0);
 }
 
 /**
- * @brief 显示播放进度信息 (时间 + 比特率)
- * @param totsec   音频文件总时长(秒)
- * @param cursec   当前播放位置(秒)
- * @param bitrate  比特率(bps)
- *
- * @note  带脏区检测: 仅当 cursec 变化时才刷新LCD, 减少SPI总线占用
+ * @brief [已废弃] 原LCD显示函数, 现由 cook_ui 统一渲染
  */
 void audio_msg_show(uint32_t totsec, uint32_t cursec, uint32_t bitrate)
 {
-    static uint16_t s_last_sec = 0xFFFF;       /* 上次刷新时的秒数(初值为不可能值,确保首次必定刷新) */
-
-    if (s_last_sec != cursec) {
-        s_last_sec = cursec;
-
-        /* MM:SS / MM:SS 格式 */
-        lcd_show_xnum(30, 210, cursec / 60, 2, 16, 0X80, RED);
-        lcd_show_char(30 + 16, 210, ':', 16, 0, RED);
-        lcd_show_xnum(30 + 24, 210, cursec % 60, 2, 16, 0X80, RED);
-
-        lcd_show_char(30 + 40, 210, '/', 16, 0, RED);
-        lcd_show_xnum(30 + 48, 210, totsec / 60, 2, 16, 0X80, RED);
-        lcd_show_char(30 + 64, 210, ':', 16, 0, RED);
-        lcd_show_xnum(30 + 72, 210, totsec % 60, 2, 16, 0X80, RED);
-
-        /* 比特率显示(Kbps) */
-        lcd_show_num(30 + 110, 210, bitrate / 1000, 4, 16, RED);
-        lcd_show_string(30 + 110 + 32, 210, 200, 16, 16, "Kbps", RED);
-    }
+    cook_audio_update(g_cook_status->audio.song_index,
+                      g_cook_status->audio.total_songs,
+                      cursec, totsec, bitrate);
 }
 
 /* ================================================================== */
@@ -390,57 +361,14 @@ FRESULT atk_dir_sdi(FF_DIR *dp, DWORD ofs)
 /* ================================================================== */
 
 /**
- * @brief 加载指定曲目的封面图片并显示到LCD全屏
- * @param song_index  曲目序号(0-based)
- *
- * @note  搜索顺序优化(按解码速度排序):
- *        1. BMP  - 无压缩, 直接像素拷贝, 最快(~10ms)
- *        2. JPG  - 有损压缩, 解码中等(~100-500ms)
- *        3. JPEG - 同JPG(不同扩展名)
- *        4. PNG  - 无损压缩, 解码最慢(~200-1000ms)
- *
- * @note  图片命名规则: 0:/PICTURE/{song_index+1}.{ext}
- *        例: 第1首 → 0:/PICTURE/01.jpg
+ * @brief [已废弃] 封面加载由 cook_draw_audio_cover() 统一接管
+ * @note  现仅设置脏区标志, 实际加载在 cook_render 中执行,
+ *        避免SPI与I2S DMA带宽冲突导致音频卡顿
  */
 void audio_load_cover(uint16_t song_index)
 {
-    char pic_path[MAX_PIC_PATH_LEN];
-    int pic_len;
-
-    /* 构造基础路径: "0:/PICTURE/NN" (N=song_index+1, 两位数补零) */
-    pic_len = snprintf(pic_path, sizeof(pic_path), "%s%02d", PICTURE_DIR_BASE, song_index + 1);
-
-    /*
-     * ★ 格式选择策略(按加载速度):
-     *   BMP (无解压, ~10ms)  >>  JPG (有损解压, ~200ms)  >>  PNG (无损解压, ~500ms)
-     *
-     *   推荐: 使用BMP格式 + LCD原始分辨率(无需缩放),
-     *         f_open + 直接像素拷贝 → SPI → 全程<100ms
-     */
-    const char *exts[] = {".bmp", ".jpg", ".jpeg", ".png"};
-    const uint8_t ext_count = sizeof(exts) / sizeof(exts[0]);
-
-    for (uint8_t e = 0; e < ext_count; e++) {
-        snprintf(pic_path + pic_len, sizeof(pic_path) - pic_len, "%s", exts[e]);
-
-        /*
-         * 使用f_stat快速检查文件是否存在(仅查目录, 不打开文件),
-         * 跳过不存在的格式, 避免piclib内部的失败重试开销
-         */
-        FILINFO finfo;
-        if (f_stat(pic_path, &finfo) != FR_OK) {
-            continue;   /* 文件不存在, 跳过, 不额外耗时 */
-        }
-
-        if (piclib_ai_load_picfile(pic_path, 0, 0, lcddev.width, lcddev.height) == 0) {
-            printf("[PIC] Loaded: %s (%lu bytes)\r\n", pic_path, (unsigned long)finfo.fsize);
-            return;
-        }
-
-        /* piclib 解码失败则继续尝试下一种格式 */
-    }
-
-    printf("[PIC] WARN: No cover for song #%d\r\n", song_index + 1);
+    (void)song_index;
+    cook_audio_set_cover_dirty();
 }
 
 /* ================================================================== */
@@ -476,9 +404,10 @@ static void cover_loader_task(void *pvParameters)
     (void)pvParameters;
 
     while (1) {
-        /* 阻塞等待切歌信号(由 audio_load_cover_async 发送) */
+        /* 阻塞等待切歌信号 */
         if (xSemaphoreTake(s_cover_sem, portMAX_DELAY) == pdTRUE) {
-            audio_load_cover(g_current_song_index);
+            /* 仅通知 cook_ui 刷新封面, 不直接操作LCD */
+            cook_audio_set_cover_dirty();
         }
     }
 }
@@ -618,8 +547,9 @@ void audio_play(void)
         strcpy((char *)s_path_buf, MUSIC_DIR_PATH "/");
         strcat((char *)s_path_buf, (const char *)s_fileinfo->fname);
 
-        /* 显示曲目编号 */
-        audio_index_show(curindex + 1, s_total_songs);
+        /* 显示曲目编号 → 通过 cook_ui 统一渲染 */
+        cook_audio_update(curindex + 1, s_total_songs, 0, 0, 0);
+        cook_audio_set_playing(1);
 
         /* ★ 设置当前曲目索引(供wav_play_song异步加载封面使用) */
         g_current_song_index = curindex;
