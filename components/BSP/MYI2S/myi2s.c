@@ -100,8 +100,9 @@ void i2s_trx_start(void)
  */
 void i2s_trx_stop(void)
 {
-    ESP_ERROR_CHECK(i2s_channel_disable(tx_handle));
-    ESP_ERROR_CHECK(i2s_channel_disable(rx_handle));
+    /* 忽略返回值: 通道可能尚未enable, disable是幂等操作 */
+    (void)i2s_channel_disable(tx_handle);
+    (void)i2s_channel_disable(rx_handle);
 }
 
 /**
