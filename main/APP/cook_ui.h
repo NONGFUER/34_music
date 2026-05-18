@@ -21,8 +21,15 @@
 #define BOX_COUNT           3       /* 菜盒数量 */
 #define VOICE_TOTAL         9       /* 语音总数 */
 #define ICON_SIZE           40      /* 状态图标尺寸 40×40 */
+
+/* ---- 原水平布局(待机模式保留) ---- */
 #define UI_BOX_W            180     /* 菜盒宽度 */
 #define UI_BOX_H            70      /* 菜盒高度 */
+
+/* ---- 炒菜模式垂直卡片布局 ---- */
+#define COOK_BOX_W          300     /* 炒菜模式: 卡片宽度 */
+#define COOK_BOX_H          66      /* 炒菜模式: 卡片高度 */
+#define COOK_BOX_GAP        14      /* 炒菜模式: 卡片间距 */
 
 /* ================================================================== */
 /*                           枚举                                      */
@@ -62,6 +69,7 @@ typedef struct {
     cook_box_status_e status;
     volatile uint8_t  changed;
     volatile uint16_t x;
+    volatile uint16_t y;             /* 炒菜模式垂直布局Y坐标 */
 } cook_box_t;
 
 /**

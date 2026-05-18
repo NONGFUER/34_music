@@ -52,6 +52,7 @@ cook_status_t *g_cook_status = &s_cook_status_obj;
 
 /**
  * @brief 初始化动态布局参数 (在cook_ui_init中调用)
+ * @note  炒菜模式: 3个菜盒垂直居中排列(大卡片)
  */
 static void cook_init_layout(void)
 {
@@ -59,13 +60,15 @@ static void cook_init_layout(void)
     s_scr_h = lcddev.height;
     printf("[COOK_UI] Layout: %dx%d\r\n", s_scr_w, s_scr_h);
 
-    /* 根据实际屏幕尺寸更新菜盒位置 */
-    uint16_t box_total_w = UI_BOX_W * 3 + BOX_GAP * 2;
-    uint16_t box_start_x = (s_scr_w > box_total_w) ? (s_scr_w - box_total_w) / 2 : 0;
+    /* ---- 炒菜模式垂直卡片布局 ---- */
+    uint16_t box_x = (s_scr_w > COOK_BOX_W) ? (s_scr_w - COOK_BOX_W) / 2 : 0;
+    uint16_t total_h = BOX_COUNT * COOK_BOX_H + (BOX_COUNT - 1) * COOK_BOX_GAP;
+    uint16_t start_y = (s_scr_h > total_h) ? (s_scr_h - total_h) / 2 : 0;
 
-    g_cook_status->box[0].x = box_start_x;
-    g_cook_status->box[1].x = box_start_x + UI_BOX_W + BOX_GAP;
-    g_cook_status->box[2].x = box_start_x + (UI_BOX_W + BOX_GAP) * 2;
+    for (int i = 0; i < BOX_COUNT; i++) {
+        g_cook_status->box[i].x = box_x;
+        g_cook_status->box[i].y = start_y + i * (COOK_BOX_H + COOK_BOX_GAP);
+    }
 }
 
 /* ================================================================== */
@@ -235,6 +238,8 @@ void cook_draw_background(uint8_t scene)
  */
 void cook_draw_statusbar(void)
 {
+    /* TODO: 暂时隐藏, 等UI优化后恢复 */
+    return;
     int16_t bar_y = s_scr_h - STATUS_BAR_H - BOX_AREA_H;
     if (bar_y < 0) bar_y = 0;
 
@@ -265,68 +270,73 @@ void cook_draw_statusbar(void)
 }
 
 /**
- * @brief 绘制单个菜盒
- * @param box_id 0~2
+ * @brief 绘制单个菜盒(炒菜模式垂直大卡片)
+ *
+ *  布局:
+ *  ┌──────────────────────────┐
+ *  │        N号菜盒           │  小字, 黑色
+ *  │          就绪            │  大字, 绿色/黄/蓝
+ *  └──────────────────────────┘
  */
 void cook_draw_box(uint8_t box_id)
 {
+    /* TODO: 暂时隐藏, 等UI优化后恢复 */
+    (void)box_id;
+    return;
     if (box_id >= BOX_COUNT || !s_scr_w) return;
 
     cook_box_t *box = &g_cook_status->box[box_id];
     uint16_t bx = box->x;
-    int16_t by = (int16_t)s_scr_h - BOX_AREA_H;
-    if (by < 0) by = 0;
+    uint16_t by = box->y;
 
-    uint16_t bxe = bx + UI_BOX_W - 1;
-    uint16_t bye = by + UI_BOX_H - 1;
-
-    /* 边界检查: 完全超出屏幕则跳过 */
+    /* 边界检查 */
     if (bx >= s_scr_w || by >= s_scr_h) return;
 
-    /* 钳位终点 */
+    uint16_t bxe = bx + COOK_BOX_W - 1;
+    uint16_t bye = by + COOK_BOX_H - 1;
     if (bxe >= s_scr_w) bxe = s_scr_w - 1;
     if (bye >= s_scr_h) bye = s_scr_h - 1;
 
-    /* 外框 */
-    lcd_draw_rectangle(bx, by, bxe, bye, WHITE);
+/* ---- 外框: 白色(带简易圆角) ---- */
+lcd_draw_rectangle(bx, by, bxe, bye, WHITE);
+/* 四角补画小圆弧模拟圆角 */
+{
+    uint8_t r = 6;
+    /* 左上角 */
+    if (bx + r < s_scr_w && by + r < s_scr_h)
+        lcd_draw_circle(bx + r, by + r, r, WHITE);
+    /* 右上角 */
+    if (bxe - r < s_scr_w && by + r < s_scr_h)
+        lcd_draw_circle(bxe - r, by + r, r, WHITE);
+    /* 左下角 */
+    if (bx + r < s_scr_w && bye - r < s_scr_h)
+        lcd_draw_circle(bx + r, bye - r, r, WHITE);
+    /* 右下角 */
+    if (bxe - r < s_scr_w && bye - r < s_scr_h)
+        lcd_draw_circle(bxe - r, bye - r, r, WHITE);
+}
 
-    /* 内部底色 */
-    safe_fill(bx + 1, by + 1, bxe - 1, bye - 1, 0xEF7D);
+    /* ---- 内部底色: 浅灰白 ---- */
+    safe_fill(bx + 2, by + 2, bxe - 2, bye - 2, 0xF800 | 0x07E0);  /* 近白色 */
 
-    /* 分隔线 */
-    uint16_t mid_y = by + (bye - by) / 2;
-    if (mid_y < bye) {
-        lcd_draw_hline(bx + 1, mid_y, (bxe - bx - 1), LGRAY);
+    /* ---- 第一行: "N号菜盒" 居中(小字, 深蓝色) ---- */
+    char title[16];
+    snprintf(title, sizeof(title), "%d号菜盒", box_id + 1);
+    uint16_t title_w = (strlen((char *)title)) * 12;   /* 估算字宽 */
+    uint16_t title_x = (bxe - bx > title_w) ? bx + (COOK_BOX_W - title_w) / 2 : bx + 4;
+    lcd_show_string(title_x, by + 6, COOK_BOX_W - 8, 14, 12, title, DARKBLUE);
+
+    /* ---- 第二行: 状态文字 居中(大字, 彩色) ---- */
+    const char *stext = "?";
+    uint16_t scolor = GRAY;
+    switch (box->status) {
+        case BOX_READY:   stext = "就绪";   scolor = GREEN;  break;
+        case BOX_DONE:    stext = "已完成"; scolor = BLUE;   break;
+        case BOX_POURING: stext = "倒菜中"; scolor = YELLOW; break;
     }
-
-    /* 上半: 编号 */
-    if (mid_y > by + 6) {
-        char lbl[12];
-        snprintf(lbl, sizeof(lbl), "BOX %d", box_id + 1);
-        lcd_show_string(bx + 4, by + 4, (bxe-bx)/2, 14, 10, lbl, DARKBLUE);
-    }
-
-    /* 下半: 状态文字 */
-    if (bye > mid_y + 4) {
-        const char *stext = "?";
-        uint16_t scolor = GRAY;
-        switch (box->status) {
-            case BOX_READY:   stext="READY"; scolor=GREEN; break;
-            case BOX_DONE:    stext="DONE";  scolor=BLUE; break;
-            case BOX_POURING: stext="POUR"; scolor=YELLOW; break;
-        }
-        lcd_show_string(bx + 4, mid_y + 4, (bxe-bx)-8, 14, 10,
-                        (char *)stext, scolor);
-    }
-
-    /* 右侧: 圆形状态指示器 */
-    if (bxe - bx > ICON_SIZE + 8 && bye - by > ICON_SIZE + 4) {
-        uint16_t ix = bxe - ICON_SIZE - 4;
-        uint16_t iy = by + ((bye - by) - ICON_SIZE) / 2;
-        if (ix + ICON_SIZE <= s_scr_w && iy + ICON_SIZE <= s_scr_h) {
-            cook_draw_icon(ix, iy, box->status);
-        }
-    }
+    uint16_t status_w = strlen((char *)stext) * 16;         /* 大字估算 */
+    uint16_t status_x = (bxe - bx > status_w) ? bx + (COOK_BOX_W - status_w) / 2 : bx + 4;
+    lcd_show_string(status_x, by + 24, COOK_BOX_W - 8, 18, 16, (char *)stext, scolor);
 }
 
 /**
