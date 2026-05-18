@@ -31,9 +31,14 @@ _pic_phy pic_phy;       /* 图片显示物理接口 */
  * @param       color         : 颜色数组
  * @retval      无
  */
-static void piclib_multi_color(uint16_t x, uint16_t y, uint16_t ex, uint16_t ey,uint16_t *color)
+static void piclib_multi_color(uint16_t x, uint16_t y, uint16_t ex, uint16_t ey, uint16_t *color)
 {
-    esp_lcd_panel_draw_bitmap(lcddev.lcd_panel_handle, x, y, ex, ey + 1, color);
+    /* 边界裁剪: 确保结束坐标不超过LCD尺寸 */
+    if (ex > lcddev.width)  ex = lcddev.width;
+    if (ey > lcddev.height) ey = lcddev.height;
+    if (x >= ex || y >= ey) return;  /* 非法坐标, 直接丢弃 */
+
+    esp_lcd_panel_draw_bitmap(lcddev.lcd_panel_handle, x, y, ex, ey, color);
 }
 
 /**

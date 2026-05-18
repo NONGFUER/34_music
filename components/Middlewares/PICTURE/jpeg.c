@@ -54,15 +54,18 @@ TickType_t jpeg_decode(const char *filename, int width, int height)
 
     startTick = xTaskGetTickCount();
 
+    printf("[JPEG] STEP0: start decode [%s] %dx%d\r\n", filename, width, height);
 
     /* Acquire a JPEG decode engine with the specified configuration */
     ESP_ERROR_CHECK(jpeg_new_decoder_engine(&decode_eng_cfg, &jpgd_handle));
+
+    printf("[JPEG] STEP1: engine acquired\r\n");
 
     FIL* fp = (FIL *)malloc(sizeof(FIL));
 
     if (fp == NULL)
     {
-        ESP_LOGE(__FUNCTION__, "Failed to allocate memory for file handle");
+        printf("[JPEG] FAIL-A: malloc FIL failed\r\n");
         return PIC_MEM_ERR;
     }
     /* Open File */
@@ -70,10 +73,12 @@ TickType_t jpeg_decode(const char *filename, int width, int height)
 
     if (ret != FR_OK)
     {
-        ESP_LOGW(__FUNCTION__, "Failed to open file [%s], err=%d", filename, ret);
+        printf("[JPEG] FAIL-B: f_open [%s] err=%d\r\n", filename, ret);
         free(fp);
         return PIC_FORMAT_ERR;
     }
+
+    printf("[JPEG] STEP2: file opened\r\n");
 
     UINT bytes_read;
 
@@ -83,49 +88,74 @@ TickType_t jpeg_decode(const char *filename, int width, int height)
 
     if (ret != FR_OK)
     {
-        ESP_LOGE(TAG, "f_stat error: %d", ret);
+        printf("[JPEG] FAIL-C: f_stat err=%d\r\n", ret);
         f_close(fp);
         free(fp);
         return PIC_FORMAT_ERR;
     }
     /* File size */
-    // size_t jpeg_size = fno.fsize;
     size_t jpeg_size = fno.fsize;
+    printf("[JPEG] STEP3: file size=%zu bytes\r\n", jpeg_size);
 
     /* allocate memory space for JPEG decoder */
     size_t tx_buffer_size = 0;
     tx_buf = (uint8_t*)jpeg_alloc_decoder_mem(jpeg_size, &tx_mem_cfg, &tx_buffer_size);
     if (tx_buf == NULL)
     {
-        ESP_LOGE(__FUNCTION__, "alloc tx buffer error");
+        printf("[JPEG] FAIL-D: alloc tx buffer (%zu bytes) failed\r\n", jpeg_size);
         f_close(fp);
         free(fp);
         return PIC_MEM_ERR;
     }
+
+    printf("[JPEG] STEP4: tx buffer alloc OK (%zu bytes)\r\n", tx_buffer_size);
+
     f_lseek(fp,SEEK_SET);
     /* Read File */
     ret = f_read(fp, tx_buf, jpeg_size, &bytes_read);
 
     if (jpeg_size != bytes_read)
     {
-        ESP_LOGE(TAG, "f_read incomplete: %d/%d", bytes_read, jpeg_size);
+        printf("[JPEG] FAIL-E: f_read incomplete %u/%zu\r\n", bytes_read, jpeg_size);
         f_close(fp);
         free(fp);
         return PIC_FORMAT_ERR;
     }
 
+    printf("[JPEG] STEP5: file read OK\r\n");
+
     /* Structure for jpeg decode header */
     jpeg_decode_picture_info_t header_info;
     ESP_ERROR_CHECK(jpeg_decoder_get_info(tx_buf, jpeg_size, &header_info));
-    ESP_LOGI(__FUNCTION__, "header parsed, width is %" PRId32 ", height is %" PRId32, header_info.width, header_info.height);
+    printf("[JPEG] STEP6: header parsed, %" PRId32 "x%" PRId32 " (display: %dx%d)\r\n",
+           header_info.width, header_info.height, width, height);
 
-    /* allocate memory space for JPEG decoder */
+    /* 图片尺寸过大警告 */
+    if (header_info.width > width || header_info.height > height) {
+        printf("[JPEG] WARN: image %" PRId32 "x%" PRId32 " > display %dx%d! "
+               "Please resize JPG to match LCD resolution.\r\n",
+               header_info.width, header_info.height, width, height);
+    }
+
+    /* ESP-IDF JPEG decoder 要求宽16字节对齐 */
+    int32_t aligned_w = ((header_info.width + 15) / 16) * 16;
+    size_t rx_alloc_size = (size_t)aligned_w * (size_t)header_info.height * 2;
+    
+    printf("[JPEG] STEP6b: aligned_w=%" PRId32 ", need %zu bytes\r\n", aligned_w, rx_alloc_size);
+    
+    if (rx_alloc_size == 0 || (int32_t)rx_alloc_size < 0) {
+        printf("[JPEG] FAIL-F: invalid alloc size!\r\n");
+        f_close(fp); free(fp); free(tx_buf); tx_buf = NULL;
+        return PIC_MEM_ERR;
+    }
+
     size_t rx_buffer_size = 0;
-    rx_buf = (uint8_t*)jpeg_alloc_decoder_mem(header_info.width * header_info.height * 2 * 2, &rx_mem_cfg, &rx_buffer_size);
+    printf("[JPEG] STEP7: try alloc rx buffer %zu bytes...\r\n", rx_alloc_size);
+    rx_buf = (uint8_t*)jpeg_alloc_decoder_mem(rx_alloc_size, &rx_mem_cfg, &rx_buffer_size);
     
     if (rx_buf == NULL)
     {
-        ESP_LOGE(__FUNCTION__, "alloc rx buffer error");
+        printf("[JPEG] FAIL-F: alloc rx buffer failed (need %zu bytes)!\r\n", rx_alloc_size);
         f_close(fp);
         free(fp);
         free(tx_buf);
@@ -133,9 +163,12 @@ TickType_t jpeg_decode(const char *filename, int width, int height)
         return PIC_MEM_ERR;
     }
 
+    printf("[JPEG] STEP8: rx buffer alloc OK (%zu bytes avail)\r\n", rx_buffer_size);
+
     static uint32_t out_size = 0;
     ESP_ERROR_CHECK(jpeg_decoder_process(jpgd_handle, &decode_cfg_rgb, tx_buf, tx_buffer_size, rx_buf, rx_buffer_size, &out_size));
-    
+    printf("[JPEG] STEP9: decode done, out_size=%" PRIu32 " bytes\r\n", out_size);
+
     /* 计算居中绘制的起始坐标 */
     int x_offset = (width - header_info.width) / 2;
     int y_offset = (height  - header_info.height) / 2;
@@ -145,7 +178,10 @@ TickType_t jpeg_decode(const char *filename, int width, int height)
     y_offset = y_offset < 0 ? 0 : y_offset;
 
     /* LCD draw */
+    printf("[JPEG] STEP10: draw at (%d,%d) size %" PRId32 "x%" PRId32 "\r\n",
+           x_offset, y_offset, header_info.width, header_info.height);
     pic_phy.multicolor(x_offset, y_offset, header_info.width + x_offset, header_info.height + y_offset, (uint16_t *)rx_buf);
+    printf("[JPEG] STEP11: draw complete\r\n");
     
     f_close(fp);
     ESP_ERROR_CHECK(jpeg_del_decoder_engine(jpgd_handle));
@@ -155,7 +191,7 @@ TickType_t jpeg_decode(const char *filename, int width, int height)
 
     endTick = xTaskGetTickCount();
     diffTick = endTick - startTick;
-    ESP_LOGI(__FUNCTION__, "elapsed time[ms]:%"PRIu32,diffTick * portTICK_PERIOD_MS);
+    printf("[JPEG] DONE: elapsed %" PRIu32 " ms\r\n", diffTick * portTICK_PERIOD_MS);
 
-    return diffTick;
+    return 0;   /* 成功返回0, 耗时已在上方打印 */
 }

@@ -116,18 +116,18 @@ extern cook_status_t *g_cook_status;
 /*                       SD卡资源文件名                                */
 /* ================================================================== */
 
-#define BG_FILE_STANDBY     "0:/PICTURE/bg_standby.bmp"
-#define BG_FILE_POUR1       "0:/PICTURE/bg_pour1.bmp"
-#define BG_FILE_POUR2       "0:/PICTURE/bg_pour2.bmp"
-#define BG_FILE_POUR3       "0:/PICTURE/bg_pour3.bmp"
-#define BG_FILE_RESET       "0:/PICTURE/bg_reset.bmp"
-#define BG_FILE_COOKING     "0:/PICTURE/bg_cooking.bmp"
-#define BG_FILE_DONE        "0:/PICTURE/bg_done.bmp"
-#define BG_FILE_ALARM_TEMP  "0:/PICTURE/bg_alarm_temp.bmp"
-#define BG_FILE_ALARM_FIRE  "0:/PICTURE/bg_alarm_fire.bmp"
-#define BG_FILE_POUR1_DONE "0:/PICTURE/bg_pour1_done.bmp"   /* 一号菜归位完成 */
-#define BG_FILE_POUR2_DONE "0:/PICTURE/bg_pour2_done.bmp"   /* 二号菜归位完成 */
-#define BG_FILE_POUR3_DONE "0:/PICTURE/bg_pour3_done.bmp"   /* 三号菜归位完成 */
+#define BG_FILE_STANDBY     "0:/PICTURE/bg_standby.jpg"
+#define BG_FILE_POUR1       "0:/PICTURE/bg_pour1.jpg"
+#define BG_FILE_POUR2       "0:/PICTURE/bg_pour2.jpg"
+#define BG_FILE_POUR3       "0:/PICTURE/bg_pour3.jpg"
+#define BG_FILE_RESET       "0:/PICTURE/bg_reset.jpg"
+#define BG_FILE_COOKING     "0:/PICTURE/bg_cooking.jpg"
+#define BG_FILE_DONE        "0:/PICTURE/bg_done.jpg"
+#define BG_FILE_ALARM_TEMP  "0:/PICTURE/bg_alarm_temp.jpg"
+#define BG_FILE_ALARM_FIRE  "0:/PICTURE/bg_alarm_fire.jpg"
+#define BG_FILE_POUR1_DONE "0:/PICTURE/bg_pour1_done.jpg"   /* 一号菜归位完成 */
+#define BG_FILE_POUR2_DONE "0:/PICTURE/bg_pour2_done.jpg"   /* 二号菜归位完成 */
+#define BG_FILE_POUR3_DONE "0:/PICTURE/bg_pour3_done.jpg"   /* 三号菜归位完成 */
 
 /* ================================================================== */
 /*                          函数声明                                   */
