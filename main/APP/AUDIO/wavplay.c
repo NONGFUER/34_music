@@ -24,6 +24,7 @@
 #include "es8388.h"
 #include "audioplay.h"
 #include "cook_ui.h"
+#include "esp_task_wdt.h"
 
 /* ================================================================== */
 /*                      FreeRTOS任务配置                               */
@@ -55,6 +56,11 @@ esp_err_t   i2s_play_end         = ESP_FAIL;  /* 播放自然结束标志 */
 esp_err_t   i2s_play_next_prev   = ESP_FAIL;  /* 用户切歌标志(上一首/下一首) */
 FSIZE_t     file_read_pos        = 0;         /* 暂停时记录的文件读取位置 */
 uint8_t     audio_channels       = 2;         /* 当前音频声道数(默认立体声), 供播放循环做单声道转立体声 */
+
+/* ★ I2S持久化状态(避免每次切歌都重新初始化) ★ */
+static int    s_i2s_cur_rate     = 0;        /* 当前I2S采样率(0=未初始化) */
+static int    s_i2s_cur_bits     = 0;        /* 当前I2S位宽(0=未初始化) */
+static uint8_t s_i2s_initialized = 0;         /* I2S是否已初始化标志 */
 
 /* ================================================================== */
 /*                       WAV头部解析                                   */
@@ -201,12 +207,18 @@ void wav_get_curtime(FIL *fx, __wavctrl *wavx)
  *        2. 向I2S缓冲区填充全零(静音数据)
  *        3. 等待I2S将静音数据送至DAC输出(10ms)
  *        4. 使能功放 → 此时DAC已是稳定静音, 无POP声
+ *
+ *        ★ 播放结束时防POP音时序(同样关键!):
+ *        1. 先将DAC数字音量渐变为0(避免突然截断)
+ *        2. 向I2S发送静音数据填满缓冲区
+ *        3. 等待所有静音数据播放完毕(DAC输出归零)
+ *        4. 最后才停止I2S和卸载设备
  * ================================================================== */
 void music(void *pvParameters)
 {
     (void)pvParameters;    /* 抑制未使用参数警告 */
 
-    /* ===== 阶段1: ES8388 DAC配置与POP音消除 ===== */
+    /* ===== 阶段1: ES8388 DAC配置与POP音消除(启动时) ===== */
     /* 先关闭输出通道, 配置完成后再打开 */
     es8388_output_cfg(0, 0);                          /* 先关闭所有输出通道 */
     es8388_adda_cfg(1, 0);                            /* 开启DAC, 关闭ADC */
@@ -214,20 +226,31 @@ void music(void *pvParameters)
 
     /* 使用RS485持久化音量(每次播放不再被硬编码覆盖) */
     uint8_t vol = audio_get_last_volume();
-    es8388_hpvol_set(vol);                            /* 耳机音量 */
-    es8388_spkvol_set(0);                             /* 喇叭音量设为0(耳机模式) */
+
+    /* ★ 关键: 启动时先将DAC音量设为0, 避免非零音量下的瞬态POP音 ★ */
+    es8388_hpvol_set(0);                             /* 耳机音量先设为0(静音) */
+    es8388_spkvol_set(0);                            /* 喇叭音量设为0 */
     vTaskDelay(pdMS_TO_TICKS(20));                    /* 等待ES8388内部寄存器配置稳定 */
 
-    /* ===== 阶段2: 再次填充静音数据(双保险) ===== */
-    memset(g_audiodev.tbuf, 0, WAV_TX_BUFSIZE);       /* 再次确保缓冲区全零 */
-    i2s_tx_write(g_audiodev.tbuf, WAV_TX_BUFSIZE);    /* 发送静音数据 */
-    vTaskDelay(pdMS_TO_TICKS(15));                    /* 更长等待时间确保静音稳定 */
+    /* ===== 阶段2: 填充静音数据(I2S DMA缓冲区预加载) ===== */
+    memset(g_audiodev.tbuf, 0, WAV_TX_BUFSIZE);       /* 缓冲区清零 */
+    i2s_tx_write(g_audiodev.tbuf, WAV_TX_BUFSIZE);    /* 发送第一块静音数据 */
+    vTaskDelay(pdMS_TO_TICKS(20));                    /* 延长等待时间, 等待I2S将静音数据送至DAC */
 
-    /* ===== 阶段3: 最后时刻才开启输出通道 ===== */
+    /* ===== 阶段3: 再次填充确保DMA pipeline满(双保险) ===== */
+    memset(g_audiodev.tbuf, 0, WAV_TX_BUFSIZE);
+    i2s_tx_write(g_audiodev.tbuf, WAV_TX_BUFSIZE);
+    vTaskDelay(pdMS_TO_TICKS(20));                    /* 延长等待时间确保静音稳定 */
+
+    /* ===== 阶段4: 此时刻才开启输出通道 + 设置实际音量 ===== */
     es8388_output_cfg(1, 0);                          /* 开启耳机通道(喇叭仍关闭) */
-    vTaskDelay(pdMS_TO_TICKS(5));                     /* 等待通道稳定 */
+    vTaskDelay(pdMS_TO_TICKS(20));                    /* 延长等待通道稳定 */
 
-    /* ===== 阶段4: 耳机模式 - 关闭喇叭功放 ===== */
+    /* ★ 此时DAC输出已是稳定静音, 安全地设置目标音量(无POP音) ★ */
+    es8388_hpvol_set(vol);                            /* 设置耳机目标音量 */
+    es8388_soft_mute(0);                              /* 解除软静音 */
+
+    /* ===== 阶段5: 耳机模式 - 关闭喇叭功放 ===== */
     xl9555_pin_write(SPK_EN_IO, 0);                  /* 高电平=关闭喇叭功放(纯耳机模式) */
 
     /* ===== 阶段4: 主播放循环 ===== */
@@ -235,12 +258,22 @@ void music(void *pvParameters)
         /* ★ 外部停止安全出口: 无论当前处于什么状态(播放/暂停/空闲),
          *   收到停止信号都立即释放I2S资源并退出, 避免卡在暂停死循环中导致资源泄漏 ★ */
         if (i2s_play_next_prev == ESP_OK || i2s_play_end == ESP_OK) {
-            audio_stop();                           /* 停止I2S DMA */
-            i2s_deinit();                           /* 卸载I2S外设(释放控制器, 允许下次重新初始化) */
+            /* ★★★ 外部停止信号防POP音处理(快速版, 避免watchdog) ★★★ */
+            es8388_soft_mute(1);                            /* 先软静音(立即生效<1ms) */
+            es8388_hpvol_set(0);                            /* 硬件音量归零 */
+
+            /* 静音冲刷DMA残留数据 */
+            memset(g_audiodev.tbuf, 0, WAV_TX_BUFSIZE);
+            i2s_tx_write(g_audiodev.tbuf, WAV_TX_BUFSIZE);
+            vTaskDelay(pdMS_TO_TICKS(20));                  /* 等DAC稳定 */
+
+            /* 仅停止DMA传输(保留I2S通道供下次复用!) */
+            audio_stop();                                   /* 停止I2S DMA */
+            /* ★ 注意: 不再调用i2s_deinit()! I2S持久化复用 ★ */
             i2s_table_size    = 0;
-            i2s_play_end      = ESP_OK;             /* 标记播放结束 */
-            s_music_task_handle = NULL;             /* 清除句柄(允许下次重新创建任务) */
-            vTaskDelete(NULL);                      /* 销毁自身 */
+            i2s_play_end      = ESP_OK;                     /* 标记播放结束 */
+            s_music_task_handle = NULL;                     /* 清除句柄(允许下次重新创建任务) */
+            vTaskDelete(NULL);                              /* 销毁自身 */
         }
 
         if ((g_audiodev.status & 0x0F) == 0x03) {    /* 状态=0x03 → 播放中 */
@@ -272,13 +305,22 @@ void music(void *pvParameters)
 
                 /* ---- 播放完成/切歌检测 ---- */
                 if (i2s_table_size >= wavctrl.datasize || i2s_play_next_prev == ESP_OK) {
-                    audio_stop();                   /* 停止I2S DMA */
-                    i2s_deinit();                   /* 卸载I2S外设(为下次重新初始化做准备) */
+                    /* ★★★ 播放结束防POP音处理(快速版, 避免watchdog) ★★★ */
+                    es8388_soft_mute(1);                            /* 先软静音(立即生效<1ms) */
+                    es8388_hpvol_set(0);                            /* 硬件音量归零 */
+
+                    /* 静音冲刷DMA残留数据 */
+                    memset(g_audiodev.tbuf, 0, WAV_TX_BUFSIZE);
+                    i2s_tx_write(g_audiodev.tbuf, WAV_TX_BUFSIZE);
+                    vTaskDelay(pdMS_TO_TICKS(20));                  /* 等DAC稳定 */
+
+                    /* 仅停止DMA (保留I2S通道复用) */
+                    audio_stop();                                   /* 停止I2S DMA */
+                    /* ★ 不调用i2s_deinit(), I2S通道持久化 ★ */
                     i2s_table_size    = 0;
-                    i2s_play_end      = ESP_OK;     /* 标记播放结束 */
-                    s_music_task_handle = NULL;     /* 清除句柄(允许下次重新创建任务) */
-                    vTaskDelete(NULL);              /* 销毁自身 */
-                    /* 注意: vTaskDelete之后的代码不会被执行 */
+                    i2s_play_end      = ESP_OK;                     /* 标记播放结束 */
+                    s_music_task_handle = NULL;                     /* 清除句柄(允许下次重新创建任务) */
+                    vTaskDelete(NULL);                              /* 销毁自身 */
                 }
 
                 /* ---- 计算本次读取量(处理尾部不足一块的情况) ---- */
@@ -333,6 +375,7 @@ void music(void *pvParameters)
         } /* end if(playing) */
 
         vTaskDelay(pdMS_TO_TICKS(1));       /* 1ms让出CPU(避免饿死低优先级任务) */
+        esp_task_wdt_reset();                 /* ★ 主动喂狗, 防止高优先级任务阻塞导致watchdog触发 ★ */
     } /* end while(1) */
 }
 
@@ -424,8 +467,14 @@ static void play_monitor_task(void *pvParameters)
 
     if (g_audiodev.file) { heap_caps_free(g_audiodev.file); g_audiodev.file = NULL; }
     if (g_audiodev.tbuf) { heap_caps_free(g_audiodev.tbuf); g_audiodev.tbuf = NULL; }
+
+    /* ★ 重置所有播放状态标志(防止残留脏状态导致下次启动崩溃!) ★ */
     s_music_task_handle  = NULL;
     s_monitor_task_handle = NULL;
+    i2s_table_size       = 0;
+    i2s_play_end         = ESP_FAIL;           /* 重置为"未结束"状态 */
+    i2s_play_next_prev   = ESP_FAIL;           /* 重置为"无切歌指令" */
+    g_audiodev.status    = 0;                  /* 确保状态为"停止" */
 
     /* 通知 cook_ui: 播放停止 */
     cook_audio_set_playing(0);
@@ -461,6 +510,45 @@ uint8_t wav_play_song(uint8_t *fname)
 {
     uint8_t res = 0;
 
+    /* ★★★ 防御性检查: 确保上一次播放已完全结束 ★★★ */
+    if (s_music_task_handle != NULL || s_monitor_task_handle != NULL) {
+        printf("[WAV] WARN: Previous playback still running, force cleanup\r\n");
+
+        /* 强制停止正在运行的任务 */
+        i2s_play_next_prev = ESP_OK;           /* 发送停止信号 */
+        vTaskDelay(pdMS_TO_TICKS(50));         /* 等待任务响应(最多50ms) */
+
+        /* 如果任务仍未退出, 强制删除(仅作为最后手段) */
+        if (s_music_task_handle != NULL) {
+            vTaskDelete(s_music_task_handle);
+            s_music_task_handle = NULL;
+        }
+        if (s_monitor_task_handle != NULL) {
+            vTaskDelete(s_monitor_task_handle);
+            s_monitor_task_handle = NULL;
+        }
+
+        /* 清理残留的DMA内存 */
+        if (g_audiodev.file) { heap_caps_free(g_audiodev.file); g_audiodev.file = NULL; }
+        if (g_audiodev.tbuf) { heap_caps_free(g_audiodev.tbuf); g_audiodev.tbuf = NULL; }
+
+        /* ★ 注意: 不卸载I2S! I2S持久化,仅停止DMA传输 ★ */
+        audio_stop();                          /* 停止DMA,保留I2S通道 */
+
+        /* 重置播放状态标志 */
+        i2s_table_size     = 0;
+        i2s_play_end       = ESP_FAIL;
+        i2s_play_next_prev = ESP_FAIL;
+
+        printf("[WAV] Force cleanup done (I2S preserved)\r\n");
+    }
+
+    /* ★ 步骤0: 尽早静音并关闭通道(防御之前可能残留的白噪声) ★ */
+    es8388_soft_mute(1);                             /* 打开软静音 */
+    es8388_hpvol_set(0);                             /* 音量归零 */
+    es8388_spkvol_set(0);
+    es8388_output_cfg(0, 0);                          /* 关闭所有输出通道 */
+
     /* 重置播放状态标志 */
     i2s_play_end       = ESP_FAIL;
     i2s_play_next_prev = ESP_FAIL;
@@ -489,7 +577,7 @@ uint8_t wav_play_song(uint8_t *fname)
         goto cleanup;
     }
 
-    /* ★ 步骤2: 根据WAV参数确定I2S位宽配置 */
+    /* ★ 步骤2: 根据WAV参数确定I2S位宽配置 + 按需初始化/重配置 ★ */
     {
         int i2s_bits;
 
@@ -507,11 +595,54 @@ uint8_t wav_play_song(uint8_t *fname)
                 goto cleanup;
         }
 
-        /* ★ 步骤3: 用目标采样率和位宽初始化I2S外设 */
-        myi2s_init(wavctrl.samplerate, i2s_bits);
-        vTaskDelay(pdMS_TO_TICKS(50));                 /* 等待I2S时钟稳定(硬件约束, 不可省略) */
+        /* ★★★ I2S持久化策略(核心优化!) ★★★
+         * 原问题: 每次切歌都 myi2s_init() + i2s_deinit(), 导致:
+         *   - 时钟重建POP音 (~50-100ms不稳定期)
+         *   - DMA缓冲区重新分配
+         *   - ES8388需要重新同步
+         *
+         * 新方案: I2S只初始化一次,后续按需reconfig
+         *   场景A: 首次播放 → 完整init (耗时~100ms)
+         *   场景B: 相同参数切歌 → 零操作! 直接复用 (耗时0ms)
+         *   场景C: 不同参数切歌 → 轻量reconfig (耗时<5ms)
+         */
 
-        /* ★ 步骤4: 同步ES8388 DAC位宽模式与I2S一致 */
+        if (!s_i2s_initialized) {
+            /* ===== 场景A: 首次初始化 (完整流程) ===== */
+            printf("[I2S] First init: rate=%luHz bits=%lu\r\n",
+                   (unsigned long)wavctrl.samplerate, (unsigned long)i2s_bits);
+            myi2s_init(wavctrl.samplerate, i2s_bits);
+            s_i2s_initialized = 1;
+            s_i2s_cur_rate    = wavctrl.samplerate;
+            s_i2s_cur_bits    = i2s_bits;
+            vTaskDelay(pdMS_TO_TICKS(100));     /* 等待I2S时钟稳定(仅首次需要) */
+        }
+        else if (s_i2s_cur_rate != wavctrl.samplerate || s_i2s_cur_bits != i2s_bits) {
+            /* ===== 场景C: 参数变化, 轻量reconfig (不释放句柄!) ===== */
+            printf("[I2S] Reconfig: %lu/%lu -> %lu/%lu\r\n",
+                   (unsigned long)s_i2s_cur_rate, (unsigned long)s_i2s_cur_bits,
+                   (unsigned long)wavctrl.samplerate, (unsigned long)i2s_bits);
+
+            /* 先停止DMA传输(保留通道句柄) */
+            audio_stop();
+
+            /* 使用ESP-IDF的reconfig API (无需deinit+init!) */
+            i2s_set_samplerate_bits_sample(wavctrl.samplerate, i2s_bits);
+
+            /* 更新缓存参数 */
+            s_i2s_cur_rate = wavctrl.samplerate;
+            s_i2s_cur_bits = i2s_bits;
+
+            vTaskDelay(pdMS_TO_TICKS(10));      /* reconfig只需10ms稳定时间 */
+        }
+        else {
+            /* ===== 场景B: 参数相同, 完全复用 (零开销!) ===== */
+            printf("[I2S] Reuse: rate=%luHz bits=%lu (no re-init)\r\n",
+                   (unsigned long)wavctrl.samplerate, (unsigned long)i2s_bits);
+            /* 注意: 静音预填充需在 audio_start() 之后进行, 此处仅记录标记 */
+        }
+
+        /* ★ 同步ES8388 DAC位宽模式与I2S一致 ★ */
         es8388_write_reg(0x17, (wavctrl.bps == 24) ? 0x38 : 0x18);
 
         /* 记录声道数(供music任务中的单声道转立体声使用) */
@@ -527,8 +658,14 @@ uint8_t wav_play_song(uint8_t *fname)
    
 
     /* ★ 步骤6: 启动I2S传输 + 创建播放任务 */
-    /* 注意: 此时I2S已有静音数据, DAC输出稳定静音 */
-    audio_start();
+    audio_start();                                    /* enable I2S通道 */
+
+    /* ★ 场景B(I2S复用): 在enable后立即填充静音, 清除DMA pipeline残留, 防止切换POP音 ★ */
+    if (s_i2s_initialized && s_i2s_cur_rate == wavctrl.samplerate) {
+        memset(g_audiodev.tbuf, 0, WAV_TX_BUFSIZE);
+        i2s_tx_write(g_audiodev.tbuf, WAV_TX_BUFSIZE);
+    }
+
     /* 注意: 功放开启放在music任务中执行, 那里有完整的POP音消除流程 */
     /* 防御性清理上一次残留的任务句柄 */
     if (s_music_task_handle != NULL) {

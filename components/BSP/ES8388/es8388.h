@@ -47,5 +47,6 @@ void es8388_output_cfg(uint8_t o1en, uint8_t o2en);                     /* ES838
 void es8388_mic_gain(uint8_t gain);                                     /* ES8388 MIC增益设置(MIC PGA增益) */
 void es8388_alc_ctrl(uint8_t sel, uint8_t maxgain, uint8_t mingain);    /* ES8388 ALC设置 */
 void es8388_input_cfg(uint8_t in);                                      /* ES8388 ADC输出通道配置 */
+void es8388_soft_mute(uint8_t mute);                                    /* ES8388 软静音控制 */
 
 #endif

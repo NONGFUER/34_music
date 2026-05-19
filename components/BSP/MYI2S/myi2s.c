@@ -145,7 +145,7 @@ void i2s_set_samplerate_bits_sample(int samplerate, int bits_sample)
 size_t i2s_tx_write(uint8_t *buffer, uint32_t frame_size)
 {
     size_t bytes_written;
-    ESP_ERROR_CHECK(i2s_channel_write(tx_handle, buffer, frame_size, &bytes_written, 1000));
+    ESP_ERROR_CHECK(i2s_channel_write(tx_handle, buffer, frame_size, &bytes_written, 50));
     return bytes_written;
 }
 
