@@ -207,9 +207,10 @@ void music(void *pvParameters)
     (void)pvParameters;    /* 抑制未使用参数警告 */
 
     /* ===== 阶段1: ES8388 DAC配置与POP音消除 ===== */
+    /* 先关闭输出通道, 配置完成后再打开 */
+    es8388_output_cfg(0, 0);                          /* 先关闭所有输出通道 */
     es8388_adda_cfg(1, 0);                            /* 开启DAC, 关闭ADC */
     es8388_input_cfg(0);                              /* 关闭录音通路 */
-    es8388_output_cfg(1, 0);                          /* 开启耳机通道 */
 
     /* 使用RS485持久化音量(每次播放不再被硬编码覆盖) */
     uint8_t vol = audio_get_last_volume();
@@ -217,12 +218,17 @@ void music(void *pvParameters)
     es8388_spkvol_set(0);                             /* 喇叭音量设为0(耳机模式) */
     vTaskDelay(pdMS_TO_TICKS(20));                    /* 等待ES8388内部寄存器配置稳定 */
 
-    /* ===== 阶段2: I2S预填充静音数据(POP音消除核心) ===== */
-    i2s_tx_write(g_audiodev.tbuf, WAV_TX_BUFSIZE);   /* 发送一整缓冲区的零数据 */
-    vTaskDelay(pdMS_TO_TICKS(10));                    /* 确保I2S DMA将静音送到DAC输出端 */
+    /* ===== 阶段2: 再次填充静音数据(双保险) ===== */
+    memset(g_audiodev.tbuf, 0, WAV_TX_BUFSIZE);       /* 再次确保缓冲区全零 */
+    i2s_tx_write(g_audiodev.tbuf, WAV_TX_BUFSIZE);    /* 发送静音数据 */
+    vTaskDelay(pdMS_TO_TICKS(15));                    /* 更长等待时间确保静音稳定 */
 
-    /* ===== 阶段3: 耳机模式 - 关闭喇叭功放 ===== */
-    xl9555_pin_write(SPK_EN_IO, 1);                  /* 高电平=关闭喇叭功放(纯耳机模式) */
+    /* ===== 阶段3: 最后时刻才开启输出通道 ===== */
+    es8388_output_cfg(1, 0);                          /* 开启耳机通道(喇叭仍关闭) */
+    vTaskDelay(pdMS_TO_TICKS(5));                     /* 等待通道稳定 */
+
+    /* ===== 阶段4: 耳机模式 - 关闭喇叭功放 ===== */
+    xl9555_pin_write(SPK_EN_IO, 0);                  /* 高电平=关闭喇叭功放(纯耳机模式) */
 
     /* ===== 阶段4: 主播放循环 ===== */
     while (1) {
@@ -521,8 +527,9 @@ uint8_t wav_play_song(uint8_t *fname)
    
 
     /* ★ 步骤6: 启动I2S传输 + 创建播放任务 */
+    /* 注意: 此时I2S已有静音数据, DAC输出稳定静音 */
     audio_start();
-    xl9555_pin_write(SPK_EN_IO, 0);
+    /* 注意: 功放开启放在music任务中执行, 那里有完整的POP音消除流程 */
     /* 防御性清理上一次残留的任务句柄 */
     if (s_music_task_handle != NULL) {
         printf("[WAV] WARN: previous music task handle not null\r\n");
