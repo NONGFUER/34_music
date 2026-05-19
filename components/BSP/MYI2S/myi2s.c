@@ -89,8 +89,15 @@ esp_err_t myi2s_init(int samplerate, int bits_sample)
  */
 void i2s_trx_start(void)
 {
-    ESP_ERROR_CHECK(i2s_channel_enable(tx_handle));
-    ESP_ERROR_CHECK(i2s_channel_enable(rx_handle));
+    /* 容错处理: 通道可能已enable(复用场景), 忽略 ESP_ERR_INVALID_STATE */
+    esp_err_t ret = i2s_channel_enable(tx_handle);
+    if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
+        ESP_ERROR_CHECK(ret);
+    }
+    ret = i2s_channel_enable(rx_handle);
+    if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
+        ESP_ERROR_CHECK(ret);
+    }
 }
 
 /**

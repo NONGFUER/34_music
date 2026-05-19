@@ -94,7 +94,7 @@ void audio_start(void)
 void audio_stop(void)
 {
     g_audiodev.status = 0;
-    i2s_trx_stop();
+    //i2s_trx_stop();
 }
 
 /* ================================================================== */

@@ -195,6 +195,11 @@ static void init_es8388(void)
         lcd_fill(30, 110, 239, 126, WHITE);
         vTaskDelay(pdMS_TO_TICKS(200));
     }
+
+    es8388_output_cfg(1, 0);            /* 开启耳机输出 */
+    es8388_adda_cfg(1, 0);             
+    es8388_hpvol_set(0);               
+    es8388_soft_mute(1); 
 }
 
 /**

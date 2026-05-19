@@ -15,7 +15,7 @@
  *              5. 单声道→立体声转换逻辑保持不变(已验证正确)
  ****************************************************************************************************
  */
-
+#include "esp_rom_sys.h"
 #include "wavplay.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -211,8 +211,6 @@ void music(void *pvParameters)
 
     /* ===== 第1步: 安全状态下配置所有参数 (输出关闭, soft_mute保持wav_play_song中已设好的1) ===== */
     //es8388_output_cfg(0, 0);                          /* 确保输出关闭 */
-    es8388_adda_cfg(1, 0);                            /* 开启DAC */
-    es8388_input_cfg(0);                              /* 关闭ADC通路 */
     es8388_soft_mute(1);
     es8388_hpvol_set(0);                           
     es8388_spkvol_set(0);
@@ -230,34 +228,39 @@ void music(void *pvParameters)
    
 
     /* ===== 第4步: 功放控制 ===== */
-    xl9555_pin_write(SPK_EN_IO, 0);                  /* 关闭喇叭功放(纯耳机模式) */
+    /* 注意: SPK_EN_IO 和 output_cfg 已在系统初始化时全局配置, 此处不再操作 */
     uint8_t target_vol = audio_get_last_volume();
     for(int v = 0; v <= target_vol; v += 3) {
         es8388_hpvol_set(v);
         vTaskDelay(pdMS_TO_TICKS(2)); // 每2ms增加一点音量
     }
     es8388_hpvol_set(target_vol); 
+
     /* ===== 阶段4: 主播放循环 ===== */
+    bool fade_in_done = false;
     while (1) {
         
         if (i2s_play_next_prev == ESP_OK || i2s_play_end == ESP_OK) {   
             //1.音量渐出
             uint8_t cur_vol = audio_get_last_volume();
-            for(int v = cur_vol; v >= 0; v -= 3) {
+            for(int v = cur_vol; v >= 0; v--) {
                 es8388_hpvol_set(v);
-                vTaskDelay(pdMS_TO_TICKS(2));
+               esp_rom_delay_us(1500);
             }
+            es8388_hpvol_set(0);                            /* 硬件音量归零 */
             es8388_soft_mute(1);                            /* 先软静音(立即生效<1ms) */
-            //es8388_hpvol_set(0);                            /* 硬件音量归零 */
+            
 
             /* 静音冲刷DMA残留数据 */
-            memset(g_audiodev.tbuf, 0, WAV_TX_BUFSIZE);
-            i2s_tx_write(g_audiodev.tbuf, WAV_TX_BUFSIZE);
-            vTaskDelay(pdMS_TO_TICKS(10));                  /* 等DAC稳定 */
+            memset(g_audiodev.tbuf, 0, WAV_TX_BUFSIZE);  
+            for(int i = 0; i < 4; i++) {
+                i2s_tx_write(g_audiodev.tbuf, WAV_TX_BUFSIZE);
+            }
+            vTaskDelay(pdMS_TO_TICKS(100));
 
-            /* 仅停止DMA传输(保留I2S通道供下次复用!) */
-            //audio_stop();                                   /* 停止I2S DMA */
-            /* ★ 注意: 不再调用i2s_deinit()! I2S持久化复用 ★ */
+           
+            audio_stop();                                   /* 停止I2S DMA */
+            
             i2s_table_size    = 0;
             i2s_play_end      = ESP_OK;                     /* 标记播放结束 */
             s_music_task_handle = NULL;                     /* 清除句柄(允许下次重新创建任务) */
@@ -272,15 +275,16 @@ void music(void *pvParameters)
 
                 /* ---- 暂停处理(带停止信号检测, 防止永久卡死) ---- */
                 if ((g_audiodev.status & 0x0F) == 0x00) {
-                    file_read_pos = f_tell(g_audiodev.file);   /* 记录暂停位置 */
-
-                    /* 阻塞等待恢复播放或停止信号(轮询间隔5ms) */
+                    file_read_pos = f_tell(g_audiodev.file);
+                    memset(g_audiodev.tbuf, 0, WAV_TX_BUFSIZE);
+                    es8388_hpvol_set(0);
+                    es8388_spkvol_set(0);
                     while ((g_audiodev.status & 0x0F) != 0x03) {
                         /* 收到外部停止信号 → 跳出暂停等待, 由外层循环统一处理资源释放 */
                         if (i2s_play_next_prev == ESP_OK || i2s_play_end == ESP_OK) {
                             break;
                         }
-                        vTaskDelay(pdMS_TO_TICKS(5));
+                        i2s_tx_write(g_audiodev.tbuf, WAV_TX_BUFSIZE);
                     }
 
                     /* 停止信号触发则跳出数据读取循环, 交由外层处理 */
@@ -288,19 +292,33 @@ void music(void *pvParameters)
                         break;
                     }
 
-                    f_lseek(g_audiodev.file, file_read_pos);   /* 跳回暂停位置继续 */
+                    f_lseek(g_audiodev.file, file_read_pos);
+                    {
+                        uint8_t target = audio_get_last_volume();
+                        for(int v = 0; v <= target; v += 3) {
+                            es8388_hpvol_set(v);
+                            vTaskDelay(pdMS_TO_TICKS(2));
+                        }
+                        es8388_hpvol_set(target);
+                    }
                 }
 
                 /* ---- 播放完成/切歌检测 ---- */
                 if (i2s_table_size >= wavctrl.datasize || i2s_play_next_prev == ESP_OK) {
-                    /* ★★★ 播放结束防POP音处理(快速版, 避免watchdog) ★★★ */
+                    uint8_t cur_vol = audio_get_last_volume();
+                    for(int v = cur_vol; v >= 0; v--) {
+                        es8388_hpvol_set(v);
+                        esp_rom_delay_us(1500);
+                    }
                     es8388_soft_mute(1);                            /* 先软静音(立即生效<1ms) */
                     es8388_hpvol_set(0);                            /* 硬件音量归零 */
 
                     /* 静音冲刷DMA残留数据 */
                     memset(g_audiodev.tbuf, 0, WAV_TX_BUFSIZE);
-                    i2s_tx_write(g_audiodev.tbuf, WAV_TX_BUFSIZE);
-                    vTaskDelay(pdMS_TO_TICKS(20));                  /* 等DAC稳定 */
+                    for(int i = 0; i < 4; i++) {
+                        i2s_tx_write(g_audiodev.tbuf, WAV_TX_BUFSIZE);
+                    }
+                    vTaskDelay(pdMS_TO_TICKS(100));
 
                     /* 仅停止DMA (保留I2S通道复用) */
                     audio_stop();                                   /* 停止I2S DMA */
@@ -354,7 +372,20 @@ void music(void *pvParameters)
                         }
                         bytes_write = samples * 4;       /* 每采样: 1byte → 2×int16_t = 4bytes */
                     }
-
+                    //渐入算法
+                    if (!fade_in_done && audio_channels == 2 && wavctrl.bps == 16) {
+                        int16_t *samples = (int16_t *)g_audiodev.tbuf;
+                        int num_samples = bytes_write / 2; // 16-bit 样本数
+                        
+                        // 对首个数据包进行 0.0 -> 1.0 的平滑放大
+                        for (int i = 0; i < num_samples; i += 2) {
+                            float ratio = (float)i / num_samples;
+                            float vol_mult = ratio * ratio* ratio*ratio;
+                            samples[i]   = (int16_t)(samples[i] * vol_mult);       // 左声道
+                            samples[i+1] = (int16_t)(samples[i+1] * vol_mult);     // 右声道
+                        }
+                        fade_in_done = true;
+                    }
                     /* ---- 送入I2S DMA发送 ---- */
                     i2s_table_size += i2s_tx_write(g_audiodev.tbuf, bytes_write);
                     total_read += (to_read > bytes_write) ? bytes_write : to_read;
@@ -500,14 +531,17 @@ uint8_t wav_play_song(uint8_t *fname)
 
     /* ★★★ 防御性检查: 确保上一次播放已完全结束 ★★★ */
     if (s_music_task_handle != NULL || s_monitor_task_handle != NULL) {
-        printf("[WAV] WARN: Previous playback still running, force cleanup\r\n");
+        printf("[WAV] WARN: Previous playback still running, waiting...\r\n");
 
-        /* 强制停止正在运行的任务 */
-        i2s_play_next_prev = ESP_OK;           /* 发送停止信号 */
-        vTaskDelay(pdMS_TO_TICKS(50));         /* 等待任务响应(最多50ms) */
+        i2s_play_next_prev = ESP_OK;
 
-        /* 如果任务仍未退出, 强制删除(仅作为最后手段) */
+        for (int wait = 0; wait < 100; wait++) {
+            vTaskDelay(pdMS_TO_TICKS(10));
+            if (s_music_task_handle == NULL && s_monitor_task_handle == NULL) break;
+        }
+
         if (s_music_task_handle != NULL) {
+            printf("[WAV] ERR: music task stuck, force delete\r\n");
             vTaskDelete(s_music_task_handle);
             s_music_task_handle = NULL;
         }
@@ -515,27 +549,22 @@ uint8_t wav_play_song(uint8_t *fname)
             vTaskDelete(s_monitor_task_handle);
             s_monitor_task_handle = NULL;
         }
-
-        /* 清理残留的DMA内存 */
         if (g_audiodev.file) { heap_caps_free(g_audiodev.file); g_audiodev.file = NULL; }
         if (g_audiodev.tbuf) { heap_caps_free(g_audiodev.tbuf); g_audiodev.tbuf = NULL; }
 
-        /* ★ 注意: 不卸载I2S! I2S持久化,仅停止DMA传输 ★ */
-        audio_stop();                          /* 停止DMA,保留I2S通道 */
-
-        /* 重置播放状态标志 */
+        audio_stop();
         i2s_table_size     = 0;
         i2s_play_end       = ESP_FAIL;
         i2s_play_next_prev = ESP_FAIL;
 
-        printf("[WAV] Force cleanup done (I2S preserved)\r\n");
+        printf("[WAV] Force cleanup done\r\n");
     }
 
-    /* ★ 步骤0: 尽早静音并关闭通道(防御之前可能残留的白噪声) ★ */
+    /* ★ 步骤0: 尽早静音(防御之前可能残留的白噪声) ★ */
     es8388_soft_mute(1);                             /* 打开软静音 */
     es8388_hpvol_set(0);                             /* 音量归零 */
     es8388_spkvol_set(0);
-    es8388_output_cfg(0, 0);                          /* 关闭所有输出通道 */
+    /* 注意: es8388_output_cfg(1,0) 已在 main.c init_es8388() 中全局一次性开启 */
 
     /* 重置播放状态标志 */
     i2s_play_end       = ESP_FAIL;
@@ -613,7 +642,7 @@ uint8_t wav_play_song(uint8_t *fname)
 
             /* 先停止DMA传输(保留通道句柄) */
             audio_stop();
-
+            i2s_trx_stop();
             /* 使用ESP-IDF的reconfig API (无需deinit+init!) */
             i2s_set_samplerate_bits_sample(wavctrl.samplerate, i2s_bits);
 
@@ -646,12 +675,14 @@ uint8_t wav_play_song(uint8_t *fname)
    
 
     /* ★ 步骤6: 启动I2S传输 + 预填充静音(消除audio_start→music任务间的空窗期POP音) ★ */
-    audio_start();                                    /* enable I2S通道 */
+    audio_start();
     vTaskDelay(pdMS_TO_TICKS(10));
     
+    es8388_hpvol_set(0);
+    es8388_spkvol_set(0);
     {
         memset(g_audiodev.tbuf, 0, WAV_TX_BUFSIZE);
-        for (int i = 0; i < 8; i++) {                /* 8帧 × 16ms = 128ms */
+        for (int i = 0; i < 8; i++) {
             i2s_tx_write(g_audiodev.tbuf, WAV_TX_BUFSIZE);
         }
     }
