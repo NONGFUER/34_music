@@ -257,10 +257,12 @@ void music(void *pvParameters)
             es8388_soft_mute(1);                            /* 先软静音(立即生效<1ms) */
             
 
-            /* 静音冲刷DMA残留数据 */
-            memset(g_audiodev.tbuf, 0, WAV_TX_BUFSIZE);  
-            for(int i = 0; i < 4; i++) {
-                i2s_tx_write(g_audiodev.tbuf, WAV_TX_BUFSIZE);
+            /* 静音冲刷DMA残留数据 (NULL保护: monitor可能已提前清理) */
+            if (g_audiodev.tbuf) {
+                memset(g_audiodev.tbuf, 0, WAV_TX_BUFSIZE);  
+                for(int i = 0; i < 4; i++) {
+                    i2s_tx_write(g_audiodev.tbuf, WAV_TX_BUFSIZE);
+                }
             }
             vTaskDelay(pdMS_TO_TICKS(100));
 
@@ -273,7 +275,7 @@ void music(void *pvParameters)
             vTaskDelete(NULL);                              /* 销毁自身 */
         }
 
-        if ((g_audiodev.status & 0x0F) == 0x03) {    /* 状态=0x03 → 播放中 */
+        if ((g_audiodev.status & 0x0F) == 0x03 && g_audiodev.file && g_audiodev.tbuf) {    /* 状态=0x03 → 播放中 */
             uint32_t total_read = 0;
 
             /* 循环读取WAV数据块并送入I2S, 直到文件读完或收到停止指令 */
@@ -319,10 +321,12 @@ void music(void *pvParameters)
                     es8388_soft_mute(1);                            /* 先软静音(立即生效<1ms) */
                     es8388_hpvol_set(0);                            /* 硬件音量归零 */
 
-                    /* 静音冲刷DMA残留数据 */
-                    memset(g_audiodev.tbuf, 0, WAV_TX_BUFSIZE);
-                    for(int i = 0; i < 4; i++) {
-                        i2s_tx_write(g_audiodev.tbuf, WAV_TX_BUFSIZE);
+                    /* 静音冲刷DMA残留数据 (NULL保护) */
+                    if (g_audiodev.tbuf) {
+                        memset(g_audiodev.tbuf, 0, WAV_TX_BUFSIZE);
+                        for(int i = 0; i < 4; i++) {
+                            i2s_tx_write(g_audiodev.tbuf, WAV_TX_BUFSIZE);
+                        }
                     }
                     vTaskDelay(pdMS_TO_TICKS(100));
 

@@ -89,14 +89,17 @@ esp_err_t myi2s_init(int samplerate, int bits_sample)
  */
 void i2s_trx_start(void)
 {
-    /* 容错处理: 通道可能已enable(复用场景), 忽略 ESP_ERR_INVALID_STATE */
+    /* 复用场景: 通道可能已enable, 先disable再re-enable确保状态一致 */
+    (void)i2s_channel_disable(tx_handle);
+    (void)i2s_channel_disable(rx_handle);
+    
     esp_err_t ret = i2s_channel_enable(tx_handle);
-    if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
-        ESP_ERROR_CHECK(ret);
+    if (ret != ESP_OK) {
+        printf("[I2S] WARN: tx_channel_enable failed: %d\r\n", ret);
     }
     ret = i2s_channel_enable(rx_handle);
-    if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
-        ESP_ERROR_CHECK(ret);
+    if (ret != ESP_OK) {
+        printf("[I2S] WARN: rx_channel_enable failed: %d\r\n", ret);
     }
 }
 
