@@ -37,7 +37,7 @@ volatile uint8_t rs485_volume_val = 0xFF;    /* 音量值(0~33), 0xFF=无效 */
 volatile uint8_t rs485_volume_flag = 0;      /* 音量命令标志: 1=有待处理 */
 
 /* 持久化音量(不被清零, 供music任务读取) */
-static uint8_t s_last_volume = 22;          /* 上次RS485设定的音量(默认30, 范围0~33) */
+static uint8_t s_last_volume = 30;          /* 上次RS485设定的音量(默认30, 范围0~33) */
 
 uint8_t audio_get_last_volume(void)
 {
@@ -84,7 +84,7 @@ volatile uint16_t g_current_song_index = 0;
 void audio_start(void)
 {
     g_audiodev.status = 3 << 0;
-    i2s_trx_start();
+   i2s_trx_start();
 }
 
 /**

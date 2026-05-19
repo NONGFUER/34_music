@@ -202,73 +202,61 @@ void wav_get_curtime(FIL *fx, __wavctrl *wavx)
  * @note  任务生命周期:
  *        创建 → ES8388防POP配置 → I2S静音填充 → 功放使能 → [播放循环] → 自删除
  *
- *        ★ POP音消除时序(关键!):
- *        1. 配置ES8388 DAC参数(此时功放关闭, 无输出)
- *        2. 向I2S缓冲区填充全零(静音数据)
- *        3. 等待I2S将静音数据送至DAC输出(10ms)
- *        4. 使能功放 → 此时DAC已是稳定静音, 无POP声
- *
- *        ★ 播放结束时防POP音时序(同样关键!):
- *        1. 先将DAC数字音量渐变为0(避免突然截断)
- *        2. 向I2S发送静音数据填满缓冲区
- *        3. 等待所有静音数据播放完毕(DAC输出归零)
- *        4. 最后才停止I2S和卸载设备
  * ================================================================== */
 void music(void *pvParameters)
 {
     (void)pvParameters;    /* 抑制未使用参数警告 */
 
-    /* ===== 阶段1: ES8388 DAC配置与POP音消除(启动时) ===== */
-    /* 先关闭输出通道, 配置完成后再打开 */
-    es8388_output_cfg(0, 0);                          /* 先关闭所有输出通道 */
-    es8388_adda_cfg(1, 0);                            /* 开启DAC, 关闭ADC */
-    es8388_input_cfg(0);                              /* 关闭录音通路 */
+    uint8_t vol = audio_get_last_volume();            /* 取目标音量 */
 
-    /* 使用RS485持久化音量(每次播放不再被硬编码覆盖) */
-    uint8_t vol = audio_get_last_volume();
+    /* ===== 第1步: 安全状态下配置所有参数 (输出关闭, soft_mute保持wav_play_song中已设好的1) ===== */
+    //es8388_output_cfg(0, 0);                          /* 确保输出关闭 */
+    es8388_adda_cfg(1, 0);                            /* 开启DAC */
+    es8388_input_cfg(0);                              /* 关闭ADC通路 */
+    es8388_soft_mute(1);
+    es8388_hpvol_set(0);                           
+    es8388_spkvol_set(0);
 
-    /* ★ 关键: 启动时先将DAC音量设为0, 避免非零音量下的瞬态POP音 ★ */
-    es8388_hpvol_set(0);                             /* 耳机音量先设为0(静音) */
-    es8388_spkvol_set(0);                            /* 喇叭音量设为0 */
-    vTaskDelay(pdMS_TO_TICKS(20));                    /* 等待ES8388内部寄存器配置稳定 */
-
-    /* ===== 阶段2: 填充静音数据(I2S DMA缓冲区预加载) ===== */
-    memset(g_audiodev.tbuf, 0, WAV_TX_BUFSIZE);       /* 缓冲区清零 */
-    i2s_tx_write(g_audiodev.tbuf, WAV_TX_BUFSIZE);    /* 发送第一块静音数据 */
-    vTaskDelay(pdMS_TO_TICKS(20));                    /* 延长等待时间, 等待I2S将静音数据送至DAC */
-
-    /* ===== 阶段3: 再次填充确保DMA pipeline满(双保险) ===== */
+    /* ===== 第2步: I2S DMA管道预填充静音 (确保DAC数字输入端是纯净零电平) ===== */
     memset(g_audiodev.tbuf, 0, WAV_TX_BUFSIZE);
-    i2s_tx_write(g_audiodev.tbuf, WAV_TX_BUFSIZE);
-    vTaskDelay(pdMS_TO_TICKS(20));                    /* 延长等待时间确保静音稳定 */
+    for (int i = 0; i < 6; i++) {                    /* 6帧≈96ms, 覆盖整个初始化期 */
+        i2s_tx_write(g_audiodev.tbuf, WAV_TX_BUFSIZE);
+    }
+    vTaskDelay(pdMS_TO_TICKS(10));                    /* 短暂等待DMA pipeline稳定 */
 
-    /* ===== 阶段4: 此时刻才开启输出通道 + 设置实际音量 ===== */
-    es8388_output_cfg(1, 0);                          /* 开启耳机通道(喇叭仍关闭) */
-    vTaskDelay(pdMS_TO_TICKS(20));                    /* 延长等待通道稳定 */
+    /* ===== 第3步: 解除静音，并做一个极快(20-30ms)的音量淡入===== */
+   
+    es8388_soft_mute(0);                              /* 同步解除软静音 */
+   
 
-    /* ★ 此时DAC输出已是稳定静音, 安全地设置目标音量(无POP音) ★ */
-    es8388_hpvol_set(vol);                            /* 设置耳机目标音量 */
-    es8388_soft_mute(0);                              /* 解除软静音 */
-
-    /* ===== 阶段5: 耳机模式 - 关闭喇叭功放 ===== */
-    xl9555_pin_write(SPK_EN_IO, 0);                  /* 高电平=关闭喇叭功放(纯耳机模式) */
-
+    /* ===== 第4步: 功放控制 ===== */
+    xl9555_pin_write(SPK_EN_IO, 0);                  /* 关闭喇叭功放(纯耳机模式) */
+    uint8_t target_vol = audio_get_last_volume();
+    for(int v = 0; v <= target_vol; v += 3) {
+        es8388_hpvol_set(v);
+        vTaskDelay(pdMS_TO_TICKS(2)); // 每2ms增加一点音量
+    }
+    es8388_hpvol_set(target_vol); 
     /* ===== 阶段4: 主播放循环 ===== */
     while (1) {
-        /* ★ 外部停止安全出口: 无论当前处于什么状态(播放/暂停/空闲),
-         *   收到停止信号都立即释放I2S资源并退出, 避免卡在暂停死循环中导致资源泄漏 ★ */
-        if (i2s_play_next_prev == ESP_OK || i2s_play_end == ESP_OK) {
-            /* ★★★ 外部停止信号防POP音处理(快速版, 避免watchdog) ★★★ */
+        
+        if (i2s_play_next_prev == ESP_OK || i2s_play_end == ESP_OK) {   
+            //1.音量渐出
+            uint8_t cur_vol = audio_get_last_volume();
+            for(int v = cur_vol; v >= 0; v -= 3) {
+                es8388_hpvol_set(v);
+                vTaskDelay(pdMS_TO_TICKS(2));
+            }
             es8388_soft_mute(1);                            /* 先软静音(立即生效<1ms) */
-            es8388_hpvol_set(0);                            /* 硬件音量归零 */
+            //es8388_hpvol_set(0);                            /* 硬件音量归零 */
 
             /* 静音冲刷DMA残留数据 */
             memset(g_audiodev.tbuf, 0, WAV_TX_BUFSIZE);
             i2s_tx_write(g_audiodev.tbuf, WAV_TX_BUFSIZE);
-            vTaskDelay(pdMS_TO_TICKS(20));                  /* 等DAC稳定 */
+            vTaskDelay(pdMS_TO_TICKS(10));                  /* 等DAC稳定 */
 
             /* 仅停止DMA传输(保留I2S通道供下次复用!) */
-            audio_stop();                                   /* 停止I2S DMA */
+            //audio_stop();                                   /* 停止I2S DMA */
             /* ★ 注意: 不再调用i2s_deinit()! I2S持久化复用 ★ */
             i2s_table_size    = 0;
             i2s_play_end      = ESP_OK;                     /* 标记播放结束 */
@@ -657,13 +645,15 @@ uint8_t wav_play_song(uint8_t *fname)
     }
    
 
-    /* ★ 步骤6: 启动I2S传输 + 创建播放任务 */
+    /* ★ 步骤6: 启动I2S传输 + 预填充静音(消除audio_start→music任务间的空窗期POP音) ★ */
     audio_start();                                    /* enable I2S通道 */
-
-    /* ★ 场景B(I2S复用): 在enable后立即填充静音, 清除DMA pipeline残留, 防止切换POP音 ★ */
-    if (s_i2s_initialized && s_i2s_cur_rate == wavctrl.samplerate) {
+    vTaskDelay(pdMS_TO_TICKS(10));
+    
+    {
         memset(g_audiodev.tbuf, 0, WAV_TX_BUFSIZE);
-        i2s_tx_write(g_audiodev.tbuf, WAV_TX_BUFSIZE);
+        for (int i = 0; i < 8; i++) {                /* 8帧 × 16ms = 128ms */
+            i2s_tx_write(g_audiodev.tbuf, WAV_TX_BUFSIZE);
+        }
     }
 
     /* 注意: 功放开启放在music任务中执行, 那里有完整的POP音消除流程 */

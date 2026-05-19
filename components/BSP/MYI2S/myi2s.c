@@ -143,9 +143,14 @@ void i2s_set_samplerate_bits_sample(int samplerate, int bits_sample)
  * @retval      发送的数据长度
  */
 size_t i2s_tx_write(uint8_t *buffer, uint32_t frame_size)
-{
-    size_t bytes_written;
-    ESP_ERROR_CHECK(i2s_channel_write(tx_handle, buffer, frame_size, &bytes_written, 50));
+{   
+    size_t bytes_written = 0;
+    esp_err_t ret = i2s_channel_write(tx_handle, buffer, frame_size, &bytes_written, 50);
+    if (ret != ESP_OK) {
+        /* 通道未使能或其他错误 → 静默返回0, 不崩溃 */
+        printf("[I2S] WARN: tx_write failed (0x%x), channel may not be ready\r\n", ret);
+        return 0;
+    }
     return bytes_written;
 }
 
