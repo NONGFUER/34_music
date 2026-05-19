@@ -23,6 +23,7 @@
 #include "es8388.h"
 #include "cook_ui.h"
 #include "freertos/semphr.h"
+#include "esp_timer.h"
 
 /* ================================================================== */
 /*                         全局变量定义                                */
@@ -510,6 +511,8 @@ void audio_play(void)
     uint8_t res;
     uint16_t curindex;
     uint8_t key;
+    int64_t t_ap = esp_timer_get_time();
+    printf("[AUDIO] audio_play entry @%lld us\r\n", t_ap);
 
     /* ============================================================ */
     /*  阶段1: 确保索引可用 (首次慢, 后续快)                           */
@@ -568,6 +571,8 @@ void audio_play(void)
         g_current_song_index = curindex;
 
         /* ★ 调用具体解码器播放音频 (声音优先启动, 封面在wav_play_song内异步加载) */
+        int64_t t_aps = esp_timer_get_time();
+        printf("[AUDIO] before audio_play_song @%lld us (+%lld us)\r\n", t_aps, t_aps - t_ap);
         key = audio_play_song(s_path_buf);
 
         /* --- 播放结束后判断下一步操作 --- */

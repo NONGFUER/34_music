@@ -25,6 +25,7 @@
 #include "audioplay.h"
 #include "cook_ui.h"
 #include "esp_task_wdt.h"
+#include "esp_timer.h"
 
 /* ================================================================== */
 /*                      FreeRTOS任务配置                               */
@@ -207,7 +208,12 @@ void music(void *pvParameters)
 {
     (void)pvParameters;    /* 抑制未使用参数警告 */
 
-    uint8_t vol = audio_get_last_volume();            /* 取目标音量 */
+
+    int64_t t_music = esp_timer_get_time();
+    printf("[MUSIC] task start @%lld us\r\n", t_music);
+
+
+
 
     /* ===== 第1步: 安全状态下配置所有参数 (输出关闭, soft_mute保持wav_play_song中已设好的1) ===== */
     //es8388_output_cfg(0, 0);                          /* 确保输出关闭 */
@@ -528,6 +534,8 @@ static void play_monitor_task(void *pvParameters)
 uint8_t wav_play_song(uint8_t *fname)
 {
     uint8_t res = 0;
+    int64_t t_wps = esp_timer_get_time();
+    printf("[WAV] wav_play_song entry @%lld us\r\n", t_wps);
 
     /* ★★★ 防御性检查: 确保上一次播放已完全结束 ★★★ */
     if (s_music_task_handle != NULL || s_monitor_task_handle != NULL) {

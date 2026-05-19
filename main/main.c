@@ -339,7 +339,8 @@ void app_main(void)
     while (1) {
         /* ---- A. RS485远程切歌 / 按键切歌 (最高优先级: 音频先启动) ---- */
         if (rs485_cmd_flag && rs485_target_index > 0) {
-            printf("[MAIN] Starting song #%d (async)\r\n", rs485_target_index);
+            int64_t t_main = esp_timer_get_time();
+            printf("[MAIN] CMD detected @%lld us\r\n", t_main);
 
             /* ★ 调用播放入口(V3.0: 非阻塞, <100ms返回) ★ */
             audio_play();
