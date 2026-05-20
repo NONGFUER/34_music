@@ -32,7 +32,7 @@ jpeg_decode_engine_cfg_t decode_eng_cfg = {
 };
 
 /* Configuration parameters for a JPEG decoder image process */
-jpeg_decode_cfg_t decode_cfg_rgb = {
+static jpeg_decode_cfg_t decode_cfg_rgb = {
     .output_format = JPEG_DECODE_OUT_FORMAT_RGB565, /* RGB565 */
     .rgb_order = JPEG_DEC_RGB_ELEMENT_ORDER_BGR,
 };

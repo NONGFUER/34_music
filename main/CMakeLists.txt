@@ -3,10 +3,12 @@ idf_component_register(
         "."
         "APP"
         "APP/AUDIO"
+        "APP/VIDEO"
     INCLUDE_DIRS 
         "."
         "APP"
         "APP/AUDIO"
+        "APP/VIDEO"
     REQUIRES
         BSP
         PICTURE
@@ -15,3 +17,4 @@ idf_component_register(
         esp_timer
         nvs_flash
 )
+

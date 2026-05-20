@@ -35,6 +35,8 @@
 #include "piclib.h"
 #include "cook_ui.h"
 #include <stdio.h>
+#include "videoplay.h"
+#include "mytimer.h"
 
 /* ================================================================== */
 /*                         全局变量                                   */
@@ -324,6 +326,11 @@ void app_main(void)
 
     /* ===== 阶段5.5: 开机自播(001.wav + 待机界面) ===== */
     cook_cmd_boot();
+
+    /* ===== 阶段5.6: 开机播放指定AVI视频 ===== */
+    printf("[SYS] Starting boot video...\r\n");
+    video_play_single("0:/VIDEO/boot.avi");   /* ★ 指定开机视频文件名 ★ */
+    printf("[SYS] Boot video done, entering main loop\r\n");
 
     /* ===== 阶段6: 主事件循环 ===== */
     /**
