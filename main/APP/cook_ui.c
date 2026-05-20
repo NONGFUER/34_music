@@ -542,9 +542,16 @@ void cook_cmd_boot(void)
     g_cook_status->sys_state = SYS_IDLE;
     g_cook_status->sys_changed = 1;
     cook_set_bg_scene(1);    /* 待机界面 */
-    rs485_target_index = VOICE_BOOT;   /* 001.wav */
-    rs485_cmd_flag     = 1;
-    printf("[COOK_UI] CMD: BOOT (voice=%d)\r\n", VOICE_BOOT);
+
+    /* 开机视频模式: 通过 g_skip_voice 标志跳过 001.wav, 避免与视频 I2S 冲突 */
+    extern uint8_t g_skip_voice;
+    if (!g_skip_voice) {
+        rs485_target_index = VOICE_BOOT;   /* 001.wav */
+        rs485_cmd_flag     = 1;
+        printf("[COOK_UI] CMD: BOOT (voice=%d)\r\n", VOICE_BOOT);
+    } else {
+        printf("[COOK_UI] CMD: BOOT (skip voice for video)\r\n");
+    }
 }
 
 /**

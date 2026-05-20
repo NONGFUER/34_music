@@ -45,6 +45,9 @@
 /** ADC1句柄(用于电位器模拟音量控制, 在app_main中初始化) */
 adc_oneshot_unit_handle_t adc1_handle = NULL;
 
+/** 语音播报跳过标志 (1=跳过本次语音, 0=正常播报) */
+uint8_t g_skip_voice = 0;
+
 /* ================================================================== */
 /*                      RS485接收任务配置                              */
 /* ================================================================== */
@@ -324,8 +327,10 @@ void app_main(void)
     xTaskCreate(rs485_task, "rs485", RS485_TASK_STK_SIZE, NULL, RS485_TASK_PRIO, NULL);
     printf("[RS485] Receive task started\r\n");
 
-    /* ===== 阶段5.5: 开机自播(001.wav + 待机界面) ===== */
+    /* ===== 阶段5.5: 开机自播(待机界面, 跳过语音避免I2S冲突) ===== */
+    g_skip_voice = 1;                    /* 标记: 跳过001.wav, 视频会占用I2S */
     cook_cmd_boot();
+    g_skip_voice = 0;                    /* 恢复: 后续命令正常播报 */
 
     /* ===== 阶段5.6: 开机播放指定AVI视频 ===== */
     printf("[SYS] Starting boot video...\r\n");

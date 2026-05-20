@@ -161,9 +161,10 @@ uint8_t video_play_mjpeg(uint8_t *pname)
 
     es8388_adda_cfg(1, 0);          /* 打开DAC,关闭ADC */
     es8388_input_cfg(0);            /* 录音关闭 */
-    es8388_output_cfg(1, 1);        /* 喇叭通道和耳机通道打开 */
-    es8388_hpvol_set(20);           /* 设置喇叭 */
-    es8388_spkvol_set(20);          /* 设置耳机 */
+    es8388_output_cfg(1, 0);        /* 喇叭通道和耳机通道打开 */
+    es8388_hpvol_set(30);           /* 设置喇叭 */
+    es8388_spkvol_set(0);          /* 设置耳机 */
+    es8388_soft_mute(0);
     vTaskDelay(pdMS_TO_TICKS(20));
 
     framebuf =  heap_caps_malloc(AVI_VIDEO_BUF_SIZE, MALLOC_CAP_DMA);
