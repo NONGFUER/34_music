@@ -165,7 +165,7 @@ void lcd_init(void)
         ESP_ERROR_CHECK(esp_lcd_dpi_panel_register_event_callbacks(lcddev.lcd_panel_handle, &mipi_cbs, NULL));
     }
 
-    lcd_clear(WHITE);
+    lcd_clear(BLACK);             /* 黑色初始背景(避免白屏闪烁) */
 
     LCD_BL(1);      /* 打开背光 */
 }

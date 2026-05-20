@@ -329,7 +329,7 @@ void video_play(void)
     {
         text_show_string(60, 190, 240, 16, "VIDEO文件夹错误!", 16, 0, RED);
         vTaskDelay(200);
-        lcd_fill(60, 190, 300, 206, WHITE);
+        lcd_fill(60, 190, 300, 206, BLACK);
         vTaskDelay(200);
     }
     
@@ -339,7 +339,7 @@ void video_play(void)
     {
         text_show_string(60, 190, 240, 16, "没有视频文件!", 16, 0, RED);
         vTaskDelay(200);
-        lcd_fill(60, 190, 240, 146, WHITE);
+        lcd_fill(60, 190, 240, 146, BLACK);
         vTaskDelay(200);
     }
     
@@ -350,7 +350,7 @@ void video_play(void)
     {
         text_show_string(60, 190, 240, 16, "内存分配失败!", 16, 0, RED);
         vTaskDelay(200);
-        lcd_fill(60, 190, 240, 146, WHITE);
+        lcd_fill(60, 190, 240, 146, BLACK);
         vTaskDelay(200);
     }
 
@@ -393,7 +393,7 @@ void video_play(void)
         strcpy((char *)pname, "0:/VIDEO/");                         /* 复制路径(目录) */
         strcat((char *)pname, (const char *)vfileinfo->fname);      /* 将文件名接在后面 */
 
-        lcd_clear(WHITE);               /* 清屏 准备视频解码显示 */
+        lcd_clear(BLACK);              /* 清屏(黑色) 准备视频解码显示 */
 
         //video_bmsg_show((uint8_t *)vfileinfo->fname, curindex + 1, totavinum);  /* 显示名字,索引等信息 */
 
@@ -544,8 +544,8 @@ static void video_task_entry(void *pvParameters)
     printf("[VIDEO] File found, size=%ld bytes\r\n", ftmp.obj.objsize);
     f_close(&ftmp);
 
-    /* ② 清屏 + 播放 */
-    lcd_clear(WHITE);
+    /* ② 清屏(黑色, 避免白屏闪烁) + 播放 */
+    lcd_clear(BLACK);
     ret = video_play_mjpeg((uint8_t *)filepath);
     printf("[VIDEO] video_play_mjpeg returned: 0x%02X\r\n", ret);
 
