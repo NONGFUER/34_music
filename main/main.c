@@ -73,7 +73,7 @@ uint8_t g_mute_flag = 0;
  * │ A组(触发): A1=开机 A3~A5=倒菜 A6=归位 A7=炒菜 A8=完成            │
  * │           A9=温异 AA=火警                                         │
  * │ B组(音量): B0=静音 B1~B4=6档音量 B5=最大(33)                    │
- * │ 应答格式: "OK\r\n"                                                  │
+ * │ 应答格式: 0x51 (单字节)                                              │
  * └──────────────────────────────────────────────────────────────────────┘
  *
  * @param arg  未使用(FreeRTOS任务函数签名要求)
@@ -95,7 +95,7 @@ static void rs485_task(void *arg)
             printf("[RS485] parse -> %d\r\n", cmd_id);
 
             if (cmd_id > 0) {
-                rs485_send_data((uint8_t *)"OK\r\n", 4);
+                rs485_send_data((uint8_t *)"\x51", 1);
 
                 switch (cmd_id) {
                     case 1:  cook_cmd_boot();                  break;  /* 0xA1 开机 */
