@@ -63,6 +63,27 @@ typedef struct {
 
 static cooking_blink_state_t s_cook_blink;
 
+/* ===== 报警闪烁动画 (A8温度异常/A9火警: 立即闪, 不等音频) ===== */
+#define ALARM_BLINK_INTERVAL_MS   500
+
+/**
+ * @brief 报警闪烁状态 (预加载两帧JPG + 定时器, 无超时, 持续闪直到停)
+ */
+typedef struct {
+    TimerHandle_t     timer;           /* 周期闪烁定时器 */
+    volatile uint8_t  fire;            /* 回调置1, 主循环消费后清0 */
+    volatile uint8_t  pending;         /* 命令函数置1, 主循环启动闪烁 */
+    uint8_t           show_null;       /* 当前显示哪张(0=报警图, 1=null图) */
+    const char       *main_file;       /* 主图文件名(动态) */
+    const char       *null_file;       /* null交替图文件名 */
+    uint8_t          *main_buf;        /* 主图解码数据 */
+    uint8_t          *null_buf;        /* null图解码数据 */
+    int32_t           frame_w;
+    int32_t           frame_h;
+} alarm_blink_state_t;
+
+static alarm_blink_state_t s_alarm_blink;
+
 /* ===== 倒菜闪烁动画 (3个菜盒共用框架) ===== */
 #define POUR_BLINK_INTERVAL_MS  500   /* 闪烁间隔(毫秒) */
 
@@ -467,6 +488,118 @@ static void cooking_stop_blink(void)
 }
 
 /* ================================================================== */
+/*           报警闪烁动画 (A8温度异常/A9火警: 立即闪)                    */
+/*                                                                      */
+/*  架构同cooking blink: pending模式, 主循环启动                        */
+/*  ★ 不等音频播完, 收到命令立即开始闪烁 ★                              */
+/* ================================================================== */
+
+static void alarm_blink_callback(TimerHandle_t xTimer)
+{
+    (void)xTimer;
+    s_alarm_blink.show_null = !s_alarm_blink.show_null;
+    s_alarm_blink.fire = 1;
+}
+
+/**
+ * @brief 预加载报警闪烁两帧JPG
+ */
+static void alarm_preload_frames(void)
+{
+    if (s_alarm_blink.main_buf != NULL && s_alarm_blink.null_buf != NULL) {
+        return;  /* 已有缓冲区 */
+    }
+
+    int8_t ret;
+    uint8_t *buf = NULL;
+    size_t  buf_size = 0;
+    int32_t w = 0, h = 0;
+
+    /* ---- 预加载主图 ---- */
+    if (s_alarm_blink.main_buf == NULL && s_alarm_blink.main_file) {
+        ret = jpeg_decode_to_buffer(s_alarm_blink.main_file, s_scr_w, s_scr_h,
+                                    &buf, &buf_size, &w, &h);
+        if (ret == 0 && buf != NULL) {
+            s_alarm_blink.main_buf = buf;
+            s_alarm_blink.frame_w   = w > 0 ? w : s_scr_w;
+            s_alarm_blink.frame_h   = h > 0 ? h : s_scr_h;
+            printf("[ALARM-PRELOAD] main OK: %" PRId32 "x%" PRId32 ", %zu bytes\r\n", w, h, buf_size);
+        } else {
+            printf("[ALARM-PRELOAD] main FAILED (ret=%d)\r\n", ret);
+        }
+    }
+
+    /* ---- 预加载null交替图 ---- */
+    if (s_alarm_blink.null_buf == NULL && s_alarm_blink.null_file) {
+        buf = NULL; buf_size = 0; w = 0; h = 0;
+        ret = jpeg_decode_to_buffer(s_alarm_blink.null_file, s_scr_w, s_scr_h,
+                                    &buf, &buf_size, &w, &h);
+        if (ret == 0 && buf != NULL) {
+            s_alarm_blink.null_buf = buf;
+            printf("[ALARM-PRELOAD] null OK: %" PRId32 "x%" PRId32 ", %zu bytes\r\n", w, h, buf_size);
+        } else {
+            printf("[ALARM-PRELOAD] null FAILED (ret=%d)\r\n", ret);
+        }
+    }
+}
+
+/**
+ * @brief 启动报警闪烁
+ * @param main_file  主报警图(如bg_alarm_temp.jpg)
+ * @param null_file  交替null图(如bg_alarm_temp_null.jpg)
+ */
+static void alarm_start_blink(const char *main_file, const char *null_file)
+{
+    /* 先停旧的 */
+    if (s_alarm_blink.timer) {
+        xTimerStop(s_alarm_blink.timer, 0);
+    } else {
+        s_alarm_blink.timer = xTimerCreate("alarm_blnk",
+                                pdMS_TO_TICKS(ALARM_BLINK_INTERVAL_MS),
+                                pdTRUE,
+                                NULL,
+                                alarm_blink_callback);
+    }
+
+    /* 释放旧帧 */
+    if (s_alarm_blink.main_buf) { free(s_alarm_blink.main_buf); s_alarm_blink.main_buf = NULL; }
+    if (s_alarm_blink.null_buf) { free(s_alarm_blink.null_buf); s_alarm_blink.null_buf = NULL; }
+
+    /* 设置新文件路径 */
+    s_alarm_blink.main_file = main_file;
+    s_alarm_blink.null_file = null_file;
+    s_alarm_blink.show_null = 0;
+    s_alarm_blink.fire     = 0;
+
+    if (s_alarm_blink.timer) {
+        xTimerReset(s_alarm_blink.timer, 0);
+        alarm_preload_frames();
+        printf("[ALARM-BLINK] STARTED\r\n");
+    }
+}
+
+/**
+ * @brief 停止报警闪烁并释放资源
+ */
+static void alarm_stop_blink(void)
+{
+    if (s_alarm_blink.timer) {
+        xTimerStop(s_alarm_blink.timer, 0);
+    }
+    s_alarm_blink.fire     = 0;
+    s_alarm_blink.pending  = 0;
+    s_alarm_blink.main_file = NULL;
+    s_alarm_blink.null_file = NULL;
+
+    if (s_alarm_blink.main_buf) { free(s_alarm_blink.main_buf); s_alarm_blink.main_buf = NULL; }
+    if (s_alarm_blink.null_buf) { free(s_alarm_blink.null_buf); s_alarm_blink.null_buf = NULL; }
+    s_alarm_blink.frame_w = 0;
+    s_alarm_blink.frame_h = 0;
+
+    printf("[ALARM-BLINK] STOPPED\r\n");
+}
+
+/* ================================================================== */
 /*                     初始化                                         */
 /* ================================================================== */
 
@@ -522,6 +655,13 @@ void cook_render(void)
         cooking_start_blink();
     }
 
+    /* ---- 1.56 报警闪烁: A8/A9立即闪(不等音频), 主循环启动 ------ */
+    if (s_alarm_blink.pending) {
+        s_alarm_blink.pending = 0;
+        printf("[COOK_UI] Start Alarm BLINK (immediate)\r\n");
+        alarm_start_blink(s_alarm_blink.main_file, s_alarm_blink.null_file);
+    }
+
     /* ---- 1.6 闪烁刷图 (预加载帧 → 直接从PSRAM刷屏, 零SD卡I/O) ---- */
     for (uint8_t i = 0; i < BOX_COUNT; i++) {
         pour_blink_state_t *s = &s_pour_blink[i];
@@ -546,6 +686,18 @@ void cook_render(void)
         } else {
             printf("[COOK-BLINK] buf NULL, retry preload\r\n");
             cooking_preload_frames();
+        }
+    }
+
+    /* ---- 1.8 报警闪烁刷图 (A8/A9: 报警图 ↔ null图) ------ */
+    if (s_alarm_blink.fire && s_alarm_blink.timer != NULL) {
+        s_alarm_blink.fire = 0;
+        uint8_t *buf = s_alarm_blink.show_null ? s_alarm_blink.null_buf : s_alarm_blink.main_buf;
+        if (buf != NULL && s_alarm_blink.frame_w > 0 && s_alarm_blink.frame_h > 0) {
+            pic_phy.multicolor(0, 0, s_alarm_blink.frame_w, s_alarm_blink.frame_h, (uint16_t *)buf);
+        } else {
+            printf("[ALARM-BLINK] buf NULL, retry preload\r\n");
+            alarm_preload_frames();
         }
     }
 
@@ -890,14 +1042,26 @@ void cook_set_bg_scene(uint8_t scene)
 /*                     综合命令 (地址即语义)                            */
 /* ================================================================== */
 
+/** 炒菜完成自动跳转待机的超时时间(ms) */
+#define FINISH_TO_STANDBY_MS   2000
+
 /**
- * @brief 炒菜完成3秒定时器回调 → 自动跳转待机
+ * @brief 炒菜完成2秒定时器回调 → 自动跳转待机界面(bg_standby)
  */
 static void finish_timer_callback(TimerHandle_t xTimer)
 {
     (void)xTimer;
-    printf("[COOK_UI] Finish timer expired -> IDLE\r\n");
-    cook_cmd_idle();
+    printf("[COOK_UI] Finish timer expired -> STANDBY\r\n");
+
+    /* 停止定时器自身 */
+    if (s_finish_timer) {
+        xTimerStop(s_finish_timer, 0);
+    }
+
+    /* 切到待机界面 */
+    cook_set_bg_scene(1);      /* bg_standby.jpg */
+
+    printf("[COOK_UI] Auto switch to standby after done\r\n");
 }
 
 /**
@@ -956,8 +1120,9 @@ void cook_cmd_pour_box(uint8_t box_id)
  */
 void cook_cmd_reset(void)
 {
-    /* 停止炒菜闪烁 */
+    /* 停止所有闪烁(炒菜/报警) + 倒菜闪烁 */
     cooking_stop_blink();
+    alarm_stop_blink();
     /* 停止所有菜盒的倒菜闪烁动画 */
     cook_stop_pour_loop(BOX_COUNT);  /* >= BOX_COUNT 表示停止全部 */
 
@@ -978,9 +1143,9 @@ void cook_cmd_box_return(uint8_t box_id)
 {
     if (box_id < 1 || box_id > BOX_COUNT) return;
 
-    /* 停止炒菜闪烁 */
+    /* 停止所有闪烁(炒菜/报警/倒菜) */
     cooking_stop_blink();
-    /* 停止所有菜盒的倒菜闪烁动画 */
+    alarm_stop_blink();
     cook_stop_pour_loop(BOX_COUNT);
 
     if (s_alarm_loop_active) cook_alarm_stop();
@@ -1003,7 +1168,9 @@ void cook_cmd_box_return(uint8_t box_id)
  */
 void cook_cmd_start(void)
 {
-    /* 停止所有菜盒的倒菜闪烁动画 */
+    /* 停止所有闪烁 + 倒菜闪烁 */
+    cooking_stop_blink();
+    alarm_stop_blink();
     cook_stop_pour_loop(BOX_COUNT);
 
     if (s_alarm_loop_active) cook_alarm_stop();
@@ -1021,14 +1188,15 @@ void cook_cmd_start(void)
 }
 
 /**
- * @brief 炒菜完成 (A7) → 显示done界面, 停留等待C1指令
+ * @brief 炒菜完成 (A7) → 显示done界面, 2秒后自动切到待机界面
  */
 void cook_cmd_finish(void)
 {
     if (s_alarm_loop_active) cook_alarm_stop();
 
-    /* 停止炒菜闪烁 + 所有倒菜闪烁 */
+    /* 停止所有闪烁(炒菜/报警/倒菜) */
     cooking_stop_blink();
+    alarm_stop_blink();
     cook_stop_pour_loop(BOX_COUNT);
 
     g_cook_status->sys_state = SYS_DONE;
@@ -1037,7 +1205,18 @@ void cook_cmd_finish(void)
     rs485_target_index = VOICE_FINISH;
     rs485_cmd_flag     = 1;
 
-    printf("[COOK_UI] CMD: FINISH -> done scene (wait C1)\r\n");
+    /* 启动2秒定时器, 到期自动切到bg_standby待机界面 */
+    if (s_finish_timer == NULL) {
+        s_finish_timer = xTimerCreate("finish_to",
+                        pdMS_TO_TICKS(FINISH_TO_STANDBY_MS),
+                        pdFALSE,
+                        NULL,
+                        finish_timer_callback);
+    }
+    if (s_finish_timer) {
+        xTimerReset(s_finish_timer, 0);
+        printf("[COOK_UI] CMD: FINISH -> done scene (auto standby in 2000ms)\r\n");
+    }
 }
 
 /**
@@ -1046,6 +1225,7 @@ void cook_cmd_finish(void)
 void cook_cmd_c1(void)
 {
     cooking_stop_blink();
+    alarm_stop_blink();
     cook_stop_pour_loop(BOX_COUNT);
     if (s_alarm_loop_active) cook_alarm_stop();
 
@@ -1065,18 +1245,23 @@ void cook_cmd_alarm_temp(void)
     g_cook_status->sys_changed = 1;
     cook_set_bg_scene(8);
 
-    /* 单次播放报警语音 */
     rs485_target_index = VOICE_ALARM_TEMP;
     rs485_cmd_flag     = 1;
 
     if (!s_alarm_task_handle) {
         xTaskCreate(cook_alarm_flash_task, "alarm_fl", 2048, NULL, 2, &s_alarm_task_handle);
     }
-    printf("[COOK_UI] CMD: ALARM TEMP (once)\r\n");
+
+    /* ★ 设pending + 文件路径, 主循环立即启动闪烁(不等音频) ★ */
+    s_alarm_blink.main_file = BG_FILE_ALARM_TEMP;
+    s_alarm_blink.null_file = BG_FILE_ALARM_TEMP_NULL;
+    s_alarm_blink.pending   = 1;
+
+    printf("[COOK_UI] CMD: ALARM TEMP -> pending blink\r\n");
 }
 
 /**
- * @brief 火警 (单次播报, 不循环)
+ * @brief 火警
  */
 void cook_cmd_alarm_fire(void)
 {
@@ -1084,14 +1269,19 @@ void cook_cmd_alarm_fire(void)
     g_cook_status->sys_changed = 1;
     cook_set_bg_scene(9);
 
-    /* 单次播放报警语音 */
     rs485_target_index = VOICE_ALARM_FIRE;
     rs485_cmd_flag     = 1;
 
     if (!s_alarm_task_handle) {
         xTaskCreate(cook_alarm_flash_task, "alarm_fl", 2048, NULL, 2, &s_alarm_task_handle);
     }
-    printf("[COOK_UI] CMD: ALARM FIRE (once)\r\n");
+
+    /* ★ 设pending + 文件路径, 主循环立即启动闪烁(不等音频) ★ */
+    s_alarm_blink.main_file = BG_FILE_ALARM_FIRE;
+    s_alarm_blink.null_file = BG_FILE_ALARM_FIRE_NULL;
+    s_alarm_blink.pending   = 1;
+
+    printf("[COOK_UI] CMD: ALARM FIRE -> pending blink\r\n");
 }
 
 /**
@@ -1099,9 +1289,9 @@ void cook_cmd_alarm_fire(void)
  */
 void cook_cmd_idle(void)
 {
-    /* 停止炒菜闪烁 */
+    /* 停止所有闪烁(炒菜/报警/倒菜) */
     cooking_stop_blink();
-    /* 停止所有菜盒的倒菜闪烁动画 */
+    alarm_stop_blink();
     cook_stop_pour_loop(BOX_COUNT);
 
     /* 停止报警闪烁FreeRTOS任务 */

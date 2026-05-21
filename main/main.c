@@ -58,12 +58,12 @@ uint8_t g_mute_flag = 0;
 #define RS485_TASK_PRIO      3               /* RS485任务优先级(低于MUSIC任务的4) */
 #define RS485_TASK_STK_SIZE  (2 * 1024)      /* RS485任务堆栈大小 */
 
-/* 音量6档 (0~33范围) */
-#define VOL_1      7       /* B1 */
-#define VOL_2      13      /* B2 */
-#define VOL_3      19      /* B3 */
-#define VOL_4      26      /* B4 */
-#define VOL_MAX    33      /* B5: 最大 */
+/* 音量5档 (0~33范围, 压缩低端无效区间) */
+#define VOL_1      18      /* B1  ~48% 对标原50% */
+#define VOL_2      22      /* B2  ~67% */
+#define VOL_3      27      /* B3  ~82% */
+#define VOL_4      30      /* B4  ~91% */
+#define VOL_MAX    33      /* B5  100% 最大 */
 
 /**
  * @brief RS485接收任务 - 解析HEX单字节指令, 发送应答, 分发命令

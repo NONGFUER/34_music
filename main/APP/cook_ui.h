@@ -115,6 +115,8 @@ extern cook_status_t *g_cook_status;
 #define BG_FILE_DONE        "0:/PICTURE/bg_done.jpg"
 #define BG_FILE_ALARM_TEMP  "0:/PICTURE/bg_alarm_temp.jpg"
 #define BG_FILE_ALARM_FIRE  "0:/PICTURE/bg_alarm_fire.jpg"
+#define BG_FILE_ALARM_TEMP_NULL "0:/PICTURE/bg_alarm_temp_null.jpg"   /* 温度异常闪烁交替图 */
+#define BG_FILE_ALARM_FIRE_NULL "0:/PICTURE/bg_alarm_fire_null.jpg"   /* 火警闪烁交替图 */
 #define BG_FILE_POUR1_DONE "0:/PICTURE/bg_pour1_done.jpg"   /* 一号菜归位完成 */
 #define BG_FILE_POUR2_DONE "0:/PICTURE/bg_pour2_done.jpg"   /* 二号菜归位完成 */
 #define BG_FILE_POUR3_DONE "0:/PICTURE/bg_pour3_done.jpg"   /* 三号菜归位完成 */
