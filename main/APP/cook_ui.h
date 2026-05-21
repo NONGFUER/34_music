@@ -117,6 +117,9 @@ extern cook_status_t *g_cook_status;
 #define BG_FILE_POUR1_DONE "0:/PICTURE/bg_pour1_done.jpg"   /* 一号菜归位完成 */
 #define BG_FILE_POUR2_DONE "0:/PICTURE/bg_pour2_done.jpg"   /* 二号菜归位完成 */
 #define BG_FILE_POUR3_DONE "0:/PICTURE/bg_pour3_done.jpg"   /* 三号菜归位完成 */
+#define BG_FILE_POUR1_NULL "0:/PICTURE/bg_pour1_null.jpg"     /* 一号菜倒菜动画-空盘(闪烁用) */
+#define BG_FILE_POUR2_NULL "0:/PICTURE/bg_pour2_null.jpg"     /* 二号菜倒菜动画-空盘(闪烁用) */
+#define BG_FILE_POUR3_NULL "0:/PICTURE/bg_pour3_null.jpg"     /* 三号菜倒菜动画-空盘(闪烁用) */
 
 /* ================================================================== */
 /*                          函数声明                                   */

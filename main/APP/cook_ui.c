@@ -23,6 +23,7 @@
 #include "freertos/timers.h"
 #include "esp_timer.h"
 #include <stdio.h>
+#include <inttypes.h>   /* PRId32 for printf format */
 
 /* ================================================================== */
 /*                    动态布局参数 (运行时计算)                          */
@@ -40,6 +41,34 @@ static volatile uint8_t  s_alarm_loop_active  = 0;
 
 /** 炒菜完成3秒定时器句柄 (到期自动跳转待机) */
 static TimerHandle_t     s_finish_timer       = NULL;
+
+/* ===== 倒菜闪烁动画 (3个菜盒共用框架) ===== */
+#define POUR_BLINK_INTERVAL_MS  500   /* 闪烁间隔(毫秒) */
+
+/**
+ * @brief 单个菜盒的倒菜闪烁状态 (预加载帧缓冲 + 定时器)
+ *        用结构体数组管理3个菜盒, 避免重复代码
+ */
+typedef struct {
+    TimerHandle_t     timer;          /* 周期定时器句柄 */
+    volatile uint8_t  fire;           /* 回调置1, 主循环消费后清0 */
+    uint8_t           show_null;      /* 当前显示哪张(0=有菜图, 1=空盘图) */
+    volatile uint8_t  pending;        /* 等待音频播完才开闪 */
+    uint8_t          *frame_buf;      /* 有菜图解码后的RGB565数据 */
+    uint8_t          *null_buf;       /* 空盘图解码后的RGB565数据 */
+    int32_t           frame_w;        /* 解码宽度 */
+    int32_t           frame_h;        /* 解码高度 */
+} pour_blink_state_t;
+
+/** 3个菜盒各自的闪烁状态 [0]=pour1, [1]=pour2, [2]=pour3 */
+static pour_blink_state_t s_pour_blink[BOX_COUNT];
+
+/** 各菜盒对应的背景图文件名表 (有菜图 / 空盘图) */
+static const char * const s_pour_bg_files[BOX_COUNT][2] = {
+    { BG_FILE_POUR1,       BG_FILE_POUR1_NULL },
+    { BG_FILE_POUR2,       BG_FILE_POUR2_NULL },
+    { BG_FILE_POUR3,       BG_FILE_POUR3_NULL },
+};
 
 /* ================================================================== */
 /*                    全局状态实例 (唯一)                               */
@@ -146,6 +175,138 @@ void cook_alarm_flash_task(void *arg)
 }
 
 /* ================================================================== */
+/*           倒菜闪烁动画 (定时器 + 主循环刷图) — 3菜盒通用               */
+/*                                                                      */
+/*  架构: 定时器回调只翻标志位(Tmr Svc轻量安全)                        */
+/*        cook_render主循环检测标志位后从PSRAM帧缓冲区刷屏              */
+/*        A3/A4/A5设pending → 等音频播完 → 自动启动闪烁                */
+/* ================================================================== */
+
+/**
+ * @brief 闪烁定时器回调 — 仅翻标志位(轻量), 通过 pvTimerID 获取 box_idx
+ * @note  所有3个菜盒共用此回调, pvTimerID 存储的是 box_id(0-based)
+ */
+static void pour_blink_callback(TimerHandle_t xTimer)
+{
+    uint8_t idx = (uint8_t)(size_t)pvTimerGetTimerID(xTimer);
+    if (idx < BOX_COUNT) {
+        s_pour_blink[idx].show_null = !s_pour_blink[idx].show_null;
+        s_pour_blink[idx].fire = 1;      /* 通知主循环刷图 */
+    }
+}
+
+/* ================================================================== */
+/*           倒菜闪烁帧预加载 (SD卡 → PSRAM, 仅一次)                    */
+/*   ★ 必须在 cook_start/stop 之前定义 (static函数)                     */
+/* ================================================================== */
+
+/**
+ * @brief 预加载指定菜盒的闪烁两帧JPG到PSRAM缓冲区
+ * @param idx  菜盒索引(0=pour1, 1=pour2, 2=pour3)
+ */
+static void cook_preload_blink_frames(uint8_t idx)
+{
+    if (idx >= BOX_COUNT) return;
+
+    pour_blink_state_t *s = &s_pour_blink[idx];
+    if (s->frame_buf != NULL && s->null_buf != NULL) {
+        return;  /* 已有有效缓冲区, 跳过 */
+    }
+
+    int8_t ret;
+    uint8_t *buf = NULL;
+    size_t  buf_size = 0;
+    int32_t w = 0, h = 0;
+
+    /* ---- 预加载有菜帧 ---- */
+    if (s->frame_buf == NULL) {
+        ret = jpeg_decode_to_buffer(s_pour_bg_files[idx][0], s_scr_w, s_scr_h,
+                                    &buf, &buf_size, &w, &h);
+        if (ret == 0 && buf != NULL) {
+            s->frame_buf = buf;
+            s->frame_w   = w > 0 ? w : s_scr_w;
+            s->frame_h   = h > 0 ? h : s_scr_h;
+            printf("[BLINK-PRELOAD] pour%d frame OK: %" PRId32 "x%" PRId32 ", %zu bytes\r\n",
+                   idx + 1, w, h, buf_size);
+        } else {
+            printf("[BLINK-PRELOAD] pour%d frame FAILED (ret=%d)\r\n", idx + 1, ret);
+        }
+    }
+
+    /* ---- 预加载空盘帧 ---- */
+    if (s->null_buf == NULL) {
+        buf = NULL; buf_size = 0; w = 0; h = 0;
+        ret = jpeg_decode_to_buffer(s_pour_bg_files[idx][1], s_scr_w, s_scr_h,
+                                    &buf, &buf_size, &w, &h);
+        if (ret == 0 && buf != NULL) {
+            s->null_buf = buf;
+            printf("[BLINK-PRELOAD] pour%d null OK: %" PRId32 "x%" PRId32 ", %zu bytes\r\n",
+                   idx + 1, w, h, buf_size);
+        } else {
+            printf("[BLINK-PRELOAD] pour%d null FAILED (ret=%d)\r\n", idx + 1, ret);
+        }
+    }
+
+    if (s->frame_buf && s->null_buf) {
+        printf("[BLINK-PRELOAD] Pour%d both frames ready.\r\n", idx + 1);
+    }
+}
+
+/**
+ * @brief 启动指定菜盒的倒菜闪烁动画
+ * @param idx  菜盒索引(0=pour1/A3, 1=pour2/A4, 2=pour3/A5)
+ */
+static void cook_start_pour_loop(uint8_t idx)
+{
+    if (idx >= BOX_COUNT) return;
+
+    pour_blink_state_t *s = &s_pour_blink[idx];
+
+    if (s->timer != NULL) {
+        xTimerStop(s->timer, 0);
+    } else {
+        char name[16];
+        snprintf(name, sizeof(name), "p%dblink", idx + 1);
+        s->timer = xTimerCreate(name,
+                                pdMS_TO_TICKS(POUR_BLINK_INTERVAL_MS),
+                                pdTRUE,
+                                (void *)(size_t)idx,   /* pvTimerID = box index */
+                                pour_blink_callback);
+    }
+
+    if (s->timer) {
+        s->show_null = 0;
+        s->fire      = 0;
+        xTimerReset(s->timer, 0);
+        cook_preload_blink_frames(idx);
+        printf("[BLINK] Pour%d blink STARTED\r\n", idx + 1);
+    }
+}
+
+/**
+ * @brief 停止指定菜盒的倒菜闪烁动画并释放预加载帧缓冲区
+ * @param idx  菜盒索引(0~2), >= BOX_COUNT 则停止全部
+ */
+static void cook_stop_pour_loop(uint8_t idx)
+{
+    for (uint8_t i = 0; i < BOX_COUNT; i++) {
+        if (idx < BOX_COUNT && i != idx) continue;  /* 指定单个则跳过其他 */
+
+        pour_blink_state_t *s = &s_pour_blink[i];
+        if (s->timer != NULL) {
+            xTimerStop(s->timer, 0);  /* 不删除定时器句柄(复用) */
+        }
+        s->fire    = 0;
+        s->pending = 0;
+
+        if (s->frame_buf) { free(s->frame_buf); s->frame_buf = NULL; }
+        if (s->null_buf)  { free(s->null_buf);  s->null_buf  = NULL; }
+        s->frame_w = 0;
+        s->frame_h = 0;
+    }
+}
+
+/* ================================================================== */
 /*                     初始化                                         */
 /* ================================================================== */
 
@@ -181,6 +342,32 @@ void cook_render(void)
         for (int i = 0; i < BOX_COUNT; i++)
             g_cook_status->box[i].changed = 1;
         g_cook_status->sys_changed = 1;
+    }
+
+    /* ---- 1.5 倒菜闪烁: A3/A4/A5设pending, 等音频播完再开闪 ---- */
+    for (uint8_t i = 0; i < BOX_COUNT; i++) {
+        if (s_pour_blink[i].pending) {
+            if ((g_audiodev.status & 0x0F) != 0x03) {
+                s_pour_blink[i].pending = 0;
+                printf("[COOK_UI] Voice done -> Start Pour%d BLINK\r\n", i + 1);
+                cook_start_pour_loop(i);
+            }
+        }
+    }
+
+    /* ---- 1.6 闪烁刷图 (预加载帧 → 直接从PSRAM刷屏, 零SD卡I/O) ---- */
+    for (uint8_t i = 0; i < BOX_COUNT; i++) {
+        pour_blink_state_t *s = &s_pour_blink[i];
+        if (s->fire && s->timer != NULL) {
+            s->fire = 0;
+            uint8_t *buf = s->show_null ? s->null_buf : s->frame_buf;
+            if (buf != NULL && s->frame_w > 0 && s->frame_h > 0) {
+                pic_phy.multicolor(0, 0, s->frame_w, s->frame_h, (uint16_t *)buf);
+            } else {
+                printf("[BLINK] Pour%d buf NULL, retry preload\r\n", i + 1);
+                cook_preload_blink_frames(i);
+            }
+        }
     }
 
     /* ---- 2. 状态栏 ---- */
@@ -572,6 +759,16 @@ void cook_cmd_pour_box(uint8_t box_id)
     uint8_t voice_map[] = {0, VOICE_POUR1, VOICE_POUR2, VOICE_POUR3};
     rs485_target_index = voice_map[box_id];
     rs485_cmd_flag     = 1;
+
+    /* ★ 倒菜闪烁: 切换时必须彻底停止其他菜盒的定时器+释放帧 ★ */
+    uint8_t idx = box_id - 1;   /* 转为0-based索引 */
+    /* 停止其他所有菜盒的闪烁(定时器+帧缓冲), 同一时刻只允许一个在闪 */
+    for (uint8_t i = 0; i < BOX_COUNT; i++) {
+        if (i != idx) cook_stop_pour_loop(i);
+    }
+    printf("[COOK_UI] POUR BOX%d -> pending blink after voice\r\n", box_id);
+    s_pour_blink[idx].pending = 1;       /* cook_render 检测到音频停了就开闪 */
+
     printf("[COOK_UI] CMD: POUR BOX%d\r\n", box_id);
 }
 
@@ -580,6 +777,9 @@ void cook_cmd_pour_box(uint8_t box_id)
  */
 void cook_cmd_reset(void)
 {
+    /* 停止所有菜盒的倒菜闪烁动画 */
+    cook_stop_pour_loop(BOX_COUNT);  /* >= BOX_COUNT 表示停止全部 */
+
     if (s_alarm_loop_active) cook_alarm_stop();
 
     for (int i = 0; i < BOX_COUNT; i++) cook_set_box(i + 1, BOX_READY);
@@ -596,6 +796,9 @@ void cook_cmd_reset(void)
 void cook_cmd_box_return(uint8_t box_id)
 {
     if (box_id < 1 || box_id > BOX_COUNT) return;
+
+    /* 停止所有菜盒的倒菜闪烁动画 */
+    cook_stop_pour_loop(BOX_COUNT);
 
     if (s_alarm_loop_active) cook_alarm_stop();
 
@@ -615,6 +818,9 @@ void cook_cmd_box_return(uint8_t box_id)
  */
 void cook_cmd_start(void)
 {
+    /* 停止所有菜盒的倒菜闪烁动画 */
+    cook_stop_pour_loop(BOX_COUNT);
+
     if (s_alarm_loop_active) cook_alarm_stop();
 
     g_cook_status->sys_state = SYS_COOKING;
@@ -697,6 +903,9 @@ void cook_cmd_alarm_fire(void)
  */
 void cook_cmd_idle(void)
 {
+    /* 停止所有菜盒的倒菜闪烁动画 */
+    cook_stop_pour_loop(BOX_COUNT);
+
     /* 停止报警闪烁FreeRTOS任务 */
     if (s_alarm_task_handle) {
         vTaskDelete(s_alarm_task_handle);
