@@ -130,10 +130,14 @@ TickType_t jpeg_decode(const char *filename, int width, int height)
     printf("[JPEG] STEP6: header parsed, %" PRId32 "x%" PRId32 " (display: %dx%d)\r\n",
            header_info.width, header_info.height, width, height);
 
-    /* 图片尺寸过大警告 */
-    if (header_info.width > width || header_info.height > height) {
-        printf("[JPEG] WARN: image %" PRId32 "x%" PRId32 " > display %dx%d! "
-               "Please resize JPG to match LCD resolution.\r\n",
+    /* 图片尺寸异常保护: 某些JPG(AI导出等)的header解析可能出错, 此时强制用显示尺寸 */
+    if (header_info.width > (uint32_t)width * 2 || header_info.height > (uint32_t)height * 2) {
+        printf("[JPEG] WARN: parsed size %" PRId32 "x%" PRId32 " looks wrong, force to %dx%d\r\n",
+               header_info.width, header_info.height, width, height);
+        header_info.width  = width;
+        header_info.height = height;
+    } else if (header_info.width > (uint32_t)width || header_info.height > (uint32_t)height) {
+        printf("[JPEG] WARN: image %" PRId32 "x%" PRId32 " > display %dx%d!\r\n",
                header_info.width, header_info.height, width, height);
     }
 
