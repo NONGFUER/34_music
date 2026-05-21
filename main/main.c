@@ -70,9 +70,9 @@ uint8_t g_mute_flag = 0;
  *
  * ★ HEX 单字节指令协议 V2 ★
  * ┌──────────────────────────────────────────────────────────────────────┐
- * │ A组(触发): A1=开机 A3~A5=倒菜 A6=归位 A7=炒菜 A8=完成            │
- * │           A9=温异 AA=火警                                         │
- * │ B组(音量): B0=静音 B1~B4=6档音量 B5=最大(33)                    │
+ * │ A组(触发): A1=开机 A3~A5=倒菜 A6=开始炒菜 A7=炒菜完成               │
+ * │           A8=温度异常 A9=火警                                       │
+ * │ C组:      C1=显示归位界面                                            │
  * │ 应答格式: 0x51 (单字节)                                              │
  * └──────────────────────────────────────────────────────────────────────┘
  *
@@ -102,17 +102,17 @@ static void rs485_task(void *arg)
                     case 2:  cook_cmd_pour_box(1);             break;  /* 0xA3 倒一号菜 */
                     case 3:  cook_cmd_pour_box(2);             break;  /* 0xA4 倒二号菜 */
                     case 4:  cook_cmd_pour_box(3);             break;  /* 0xA5 倒三号菜 */
-                    case 5:  cook_cmd_box_return(3);           break;  /* 0xA6 归位(用三号归位图) */
-                    case 6:  cook_cmd_start();                 break;  /* 0xA7 开始炒菜 */
-                    case 7:  cook_cmd_finish();                break;  /* 0xA8 炒菜完成 */
-                    case 8:  cook_cmd_alarm_temp();            break;  /* 0xA9 温度异常 */
-                    case 9:  cook_cmd_alarm_fire();            break;  /* 0xAA 火警 */
+                    case 5:  cook_cmd_start();                 break;  /* 0xA6 开始炒菜 */
+                    case 6:  cook_cmd_finish();                break;  /* 0xA7 炒菜完成 */
+                    case 7:  cook_cmd_alarm_temp();            break;  /* 0xA8 温度异常 */
+                    case 8:  cook_cmd_alarm_fire();            break;  /* 0xA9 火警 */
                     case 10: g_mute_flag = 1; es8388_soft_mute(1); rs485_volume_flag = 0; break;   /* B0: 静音 */
                     case 11: g_mute_flag = 0; es8388_soft_mute(0);rs485_volume_val=VOL_1;   rs485_volume_flag=1;break;
                     case 12: g_mute_flag = 0; es8388_soft_mute(0);rs485_volume_val=VOL_2;   rs485_volume_flag=1;break;
                     case 13: g_mute_flag = 0; es8388_soft_mute(0);rs485_volume_val=VOL_3;   rs485_volume_flag=1;break;
                     case 14: g_mute_flag = 0; es8388_soft_mute(0);rs485_volume_val=VOL_4;   rs485_volume_flag=1;break;
                     case 15: g_mute_flag = 0; es8388_soft_mute(0);rs485_volume_val=VOL_MAX; rs485_volume_flag=1;break;
+                    case 16: cook_cmd_c1();                     break;  /* 0xC1 显示归位界面 */
                     default: break;
                 }
             }

@@ -57,8 +57,8 @@ typedef enum {
     VOICE_BOX_RETURN     = 5,   /* 006.wav - 目录第5位 */
     VOICE_START_COOK     = 6,   /* 007.wav - 目录第6位 */
     VOICE_FINISH         = 7,   /* 008.wav - 目录第7位 */
-    VOICE_ALARM_TEMP     = 8,   /* 009.wav - 目录第8位 */
-    VOICE_ALARM_FIRE     = 9,   /* 010.wav - 目录第9位 */
+    VOICE_ALARM_TEMP     = 9,   /* 009.wav */
+    VOICE_ALARM_FIRE     = 10,  /* 010.wav */
 } voice_id_e;
 
 /* ================================================================== */
@@ -111,6 +111,7 @@ extern cook_status_t *g_cook_status;
 #define BG_FILE_POUR3       "0:/PICTURE/bg_pour3.jpg"
 #define BG_FILE_RESET       "0:/PICTURE/bg_reset.jpg"
 #define BG_FILE_COOKING     "0:/PICTURE/bg_cooking.jpg"
+#define BG_FILE_BG          "0:/PICTURE/bg.jpg"
 #define BG_FILE_DONE        "0:/PICTURE/bg_done.jpg"
 #define BG_FILE_ALARM_TEMP  "0:/PICTURE/bg_alarm_temp.jpg"
 #define BG_FILE_ALARM_FIRE  "0:/PICTURE/bg_alarm_fire.jpg"
@@ -148,6 +149,7 @@ void cook_cmd_pour_box(uint8_t box_id);
 void cook_cmd_reset(void);
 void cook_cmd_start(void);
 void cook_cmd_finish(void);
+void cook_cmd_c1(void);                                /* C1: 显示归位界面(bg_reset) */
 void cook_cmd_alarm_temp(void);
 void cook_cmd_alarm_fire(void);
 void cook_cmd_idle(void);

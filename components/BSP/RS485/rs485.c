@@ -122,11 +122,11 @@ int cmd_parse(const uint8_t *buf, uint8_t len)
         case CMD_POUR_BOX1:      return  2;   /* 0xA3 倒一号菜 */
         case CMD_POUR_BOX2:      return  3;   /* 0xA4 倒二号菜 */
         case CMD_POUR_BOX3:      return  4;   /* 0xA5 倒三号菜 */
-        case CMD_BOX_RETURN:     return  5;   /* 0xA6 归位(统一归位) */
-        case CMD_START_COOK:     return  6;   /* 0xA7 开始炒菜 */
-        case CMD_FINISH:         return  7;   /* 0xA8 炒菜完成 */
-        case CMD_ALARM_TEMP:     return  8;   /* 0xA9 温度异常 */
-        case CMD_ALARM_FIRE:     return  9;   /* 0xAA 火警 */
+        case CMD_START_COOK:     return  5;   /* 0xA6 开始炒菜 */
+        case CMD_FINISH:         return  6;   /* 0xA7 炒菜完成 */
+        case CMD_ALARM_TEMP:     return  7;   /* 0xA8 温度异常 */
+        case CMD_ALARM_FIRE:     return  8;   /* 0xA9 火警 */
+        case CMD_C1:             return 16;   /* 0xC1 显示归位界面 */
         case CMD_VOLUME_MUTE:    return 10;   /* 0xB0 静音 */
         case CMD_VOLUME_LV2:     return 11;   /* 0xB1 音量2 */
         case CMD_VOLUME_LV3:     return 12;   /* 0xB2 音量3 */

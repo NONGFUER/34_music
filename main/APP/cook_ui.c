@@ -42,6 +42,27 @@ static volatile uint8_t  s_alarm_loop_active  = 0;
 /** 炒菜完成3秒定时器句柄 (到期自动跳转待机) */
 static TimerHandle_t     s_finish_timer       = NULL;
 
+/* ===== 炒菜开始闪烁动画 (A6: cooking blink) ===== */
+#define COOKING_BLINK_INTERVAL_MS   500   /* 闪烁间隔 */
+#define COOKING_BLINK_TIMEOUT_MS    7000  /* 闪烁持续时间(毫秒), 到后切bg_reset */
+
+/**
+ * @brief 炒菜开始闪烁状态 (预加载两帧JPG + 定时器 + 超时定时器)
+ */
+typedef struct {
+    TimerHandle_t     blink_timer;      /* 周期闪烁定时器 */
+    TimerHandle_t     timeout_timer;    /* 7秒超时单次定时器 */
+    volatile uint8_t  fire;             /* 回调置1, 主循环消费后清0 */
+    volatile uint8_t  pending;          /* 命令函数置1, 主循环检测后启动闪烁 */
+    uint8_t           show_alt;         /* 当前显示哪张(0=cooking图, 1=交替图) */
+    uint8_t          *cook_buf;         /* bg_cooking.jpg 解码后的RGB565数据 */
+    uint8_t          *alt_buf;          /* 另一张图(默认bg_reset) 解码数据 */
+    int32_t           frame_w;
+    int32_t           frame_h;
+} cooking_blink_state_t;
+
+static cooking_blink_state_t s_cook_blink;
+
 /* ===== 倒菜闪烁动画 (3个菜盒共用框架) ===== */
 #define POUR_BLINK_INTERVAL_MS  500   /* 闪烁间隔(毫秒) */
 
@@ -307,6 +328,145 @@ static void cook_stop_pour_loop(uint8_t idx)
 }
 
 /* ================================================================== */
+/*           炒菜开始闪烁动画 (A6: cooking blink)                         */
+/*                                                                      */
+/*  A6流程: bg_cooking.jpg → 与alt图闪烁7秒 → 停闪切bg_reset.jpg       */
+/*  架构同倒菜: 预加载帧+定时器翻标志+主循环刷屏                        */
+/* ================================================================== */
+
+/** 闪烁定时器回调 — 仅翻标志位 */
+static void cooking_blink_callback(TimerHandle_t xTimer)
+{
+    (void)xTimer;
+    s_cook_blink.show_alt = !s_cook_blink.show_alt;
+    s_cook_blink.fire = 1;
+}
+
+/**
+ * @brief 7秒超时回调 — 停止闪烁 + 切换到bg_reset界面
+ */
+static void cooking_timeout_callback(TimerHandle_t xTimer)
+{
+    (void)xTimer;
+    printf("[COOK-BLINK] 7s timeout -> stop blink, switch to reset\r\n");
+
+    /* 停闪烁定时器 */
+    if (s_cook_blink.blink_timer) {
+        xTimerStop(s_cook_blink.blink_timer, 0);
+    }
+    s_cook_blink.fire = 0;
+
+    /* 释放帧缓冲 */
+    if (s_cook_blink.cook_buf) { free(s_cook_blink.cook_buf); s_cook_blink.cook_buf = NULL; }
+    if (s_cook_blink.alt_buf)   { free(s_cook_blink.alt_buf);   s_cook_blink.alt_buf   = NULL; }
+
+    /* 切到bg_reset场景 */
+    cook_set_bg_scene(5);
+}
+
+/**
+ * @brief 预加载炒菜闪烁的两帧JPG
+ */
+static void cooking_preload_frames(void)
+{
+    if (s_cook_blink.cook_buf != NULL && s_cook_blink.alt_buf != NULL) {
+        return;  /* 已有缓冲区 */
+    }
+
+    int8_t ret;
+    uint8_t *buf = NULL;
+    size_t  buf_size = 0;
+    int32_t w = 0, h = 0;
+
+    /* ---- 预加载 cooking 帧 (bg_cooking.jpg) ---- */
+    if (s_cook_blink.cook_buf == NULL) {
+        ret = jpeg_decode_to_buffer(BG_FILE_COOKING, s_scr_w, s_scr_h,
+                                    &buf, &buf_size, &w, &h);
+        if (ret == 0 && buf != NULL) {
+            s_cook_blink.cook_buf = buf;
+            s_cook_blink.frame_w  = w > 0 ? w : s_scr_w;
+            s_cook_blink.frame_h  = h > 0 ? h : s_scr_h;
+            printf("[COOK-PRELOAD] cooking frame OK: %" PRId32 "x%" PRId32 ", %zu bytes\r\n",
+                   w, h, buf_size);
+        } else {
+            printf("[COOK-PRELOAD] cooking frame FAILED (ret=%d)\r\n", ret);
+        }
+    }
+
+    /* ---- 预加载交替帧 (bg.jpg) ---- */
+    if (s_cook_blink.alt_buf == NULL) {
+        buf = NULL; buf_size = 0; w = 0; h = 0;
+        ret = jpeg_decode_to_buffer(BG_FILE_BG, s_scr_w, s_scr_h,
+                                    &buf, &buf_size, &w, &h);
+        if (ret == 0 && buf != NULL) {
+            s_cook_blink.alt_buf = buf;
+            printf("[COOK-PRELOAD] alt frame OK: %" PRId32 "x%" PRId32 ", %zu bytes\r\n",
+                   w, h, buf_size);
+        } else {
+            printf("[COOK-PRELOAD] alt frame FAILED (ret=%d)\r\n", ret);
+        }
+    }
+}
+
+/**
+ * @brief 启动炒菜闪烁动画 + 7秒超时
+ * @note  由 cook_render() 主循环调用(非RS485任务, 避免栈溢出)
+ */
+static void cooking_start_blink(void)
+{
+    /* 先清理残留状态 */
+    if (s_cook_blink.blink_timer) {
+        xTimerStop(s_cook_blink.blink_timer, 0);
+    } else {
+        s_cook_blink.blink_timer = xTimerCreate("cook_blink",
+                                pdMS_TO_TICKS(COOKING_BLINK_INTERVAL_MS),
+                                pdTRUE,
+                                NULL,
+                                cooking_blink_callback);
+    }
+
+    if (s_cook_blink.timeout_timer) {
+        xTimerStop(s_cook_blink.timeout_timer, 0);
+    } else {
+        s_cook_blink.timeout_timer = xTimerCreate("cook_to",
+                                pdMS_TO_TICKS(COOKING_BLINK_TIMEOUT_MS),
+                                pdFALSE,
+                                NULL,
+                                cooking_timeout_callback);
+    }
+
+    if (s_cook_blink.blink_timer && s_cook_blink.timeout_timer) {
+        s_cook_blink.show_alt = 0;
+        s_cook_blink.fire     = 0;
+        xTimerReset(s_cook_blink.blink_timer, 0);
+        xTimerReset(s_cook_blink.timeout_timer, 0);
+        cooking_preload_frames();
+        printf("[COOK-BLINK] STARTED (blink 500ms, timeout 7000ms)\r\n");
+    }
+}
+
+/**
+ * @brief 停止炒菜闪烁动画并释放所有资源
+ */
+static void cooking_stop_blink(void)
+{
+    if (s_cook_blink.blink_timer) {
+        xTimerStop(s_cook_blink.blink_timer, 0);
+    }
+    if (s_cook_blink.timeout_timer) {
+        xTimerStop(s_cook_blink.timeout_timer, 0);
+    }
+    s_cook_blink.fire = 0;
+
+    if (s_cook_blink.cook_buf) { free(s_cook_blink.cook_buf); s_cook_blink.cook_buf = NULL; }
+    if (s_cook_blink.alt_buf)   { free(s_cook_blink.alt_buf);   s_cook_blink.alt_buf   = NULL; }
+    s_cook_blink.frame_w = 0;
+    s_cook_blink.frame_h = 0;
+
+    printf("[COOK-BLINK] STOPPED\r\n");
+}
+
+/* ================================================================== */
 /*                     初始化                                         */
 /* ================================================================== */
 
@@ -355,6 +515,13 @@ void cook_render(void)
         }
     }
 
+    /* ---- 1.55 炒菜闪烁: A6设pending, 主循环启动(避免RS485任务栈溢出) ---- */
+    if (s_cook_blink.pending) {
+        s_cook_blink.pending = 0;
+        printf("[COOK_UI] Start Cooking BLINK (main loop)\r\n");
+        cooking_start_blink();
+    }
+
     /* ---- 1.6 闪烁刷图 (预加载帧 → 直接从PSRAM刷屏, 零SD卡I/O) ---- */
     for (uint8_t i = 0; i < BOX_COUNT; i++) {
         pour_blink_state_t *s = &s_pour_blink[i];
@@ -367,6 +534,18 @@ void cook_render(void)
                 printf("[BLINK] Pour%d buf NULL, retry preload\r\n", i + 1);
                 cook_preload_blink_frames(i);
             }
+        }
+    }
+
+    /* ---- 1.7 炒菜开始闪烁刷图 (A6: bg_cooking ↔ alt图) ---- */
+    if (s_cook_blink.fire && s_cook_blink.blink_timer != NULL) {
+        s_cook_blink.fire = 0;
+        uint8_t *buf = s_cook_blink.show_alt ? s_cook_blink.alt_buf : s_cook_blink.cook_buf;
+        if (buf != NULL && s_cook_blink.frame_w > 0 && s_cook_blink.frame_h > 0) {
+            pic_phy.multicolor(0, 0, s_cook_blink.frame_w, s_cook_blink.frame_h, (uint16_t *)buf);
+        } else {
+            printf("[COOK-BLINK] buf NULL, retry preload\r\n");
+            cooking_preload_frames();
         }
     }
 
@@ -777,6 +956,8 @@ void cook_cmd_pour_box(uint8_t box_id)
  */
 void cook_cmd_reset(void)
 {
+    /* 停止炒菜闪烁 */
+    cooking_stop_blink();
     /* 停止所有菜盒的倒菜闪烁动画 */
     cook_stop_pour_loop(BOX_COUNT);  /* >= BOX_COUNT 表示停止全部 */
 
@@ -797,6 +978,8 @@ void cook_cmd_box_return(uint8_t box_id)
 {
     if (box_id < 1 || box_id > BOX_COUNT) return;
 
+    /* 停止炒菜闪烁 */
+    cooking_stop_blink();
     /* 停止所有菜盒的倒菜闪烁动画 */
     cook_stop_pour_loop(BOX_COUNT);
 
@@ -814,7 +997,9 @@ void cook_cmd_box_return(uint8_t box_id)
 }
 
 /**
- * @brief 开始炒菜
+ * @brief 开始炒菜 (A6: 进入bg_cooking → 闪烁7秒 → 切bg_reset)
+ * @note  仅设pending标志, 重活(cooking_start_blink)由cook_render主循环执行
+ *        避免在RS485任务栈上调用深链路函数导致栈溢出
  */
 void cook_cmd_start(void)
 {
@@ -825,39 +1010,50 @@ void cook_cmd_start(void)
 
     g_cook_status->sys_state = SYS_COOKING;
     g_cook_status->sys_changed = 1;
-    cook_set_bg_scene(5);      /* 开始炒菜 → 归位界面(bg_reset.bmp) */
+    cook_set_bg_scene(6);      /* 炒菜开始 → bg_cooking.jpg */
     rs485_target_index = VOICE_START_COOK;
     rs485_cmd_flag     = 1;
-    printf("[COOK_UI] CMD: START COOKING -> reset scene\r\n");
+
+    /* ★ 只设pending, cook_render检测后启动闪烁(避免RS485任务栈溢出) ★ */
+    s_cook_blink.pending = 1;
+
+    printf("[COOK_UI] CMD: START COOKING -> cooking scene + pending blink\r\n");
 }
 
 /**
- * @brief 炒菜完成 → 显示done界面 + 3秒后自动跳转待机
+ * @brief 炒菜完成 (A7) → 显示done界面, 停留等待C1指令
  */
 void cook_cmd_finish(void)
 {
     if (s_alarm_loop_active) cook_alarm_stop();
 
+    /* 停止炒菜闪烁 + 所有倒菜闪烁 */
+    cooking_stop_blink();
+    cook_stop_pour_loop(BOX_COUNT);
+
     g_cook_status->sys_state = SYS_DONE;
     g_cook_status->sys_changed = 1;
-    cook_set_bg_scene(7);      /* 完成界面 */
+    cook_set_bg_scene(7);      /* 完成界面 bg_done.jpg */
     rs485_target_index = VOICE_FINISH;
     rs485_cmd_flag     = 1;
 
-    /* 创建/复位3秒单次定时器, 到期自动回待机 */
-    if (!s_finish_timer) {
-        s_finish_timer = xTimerCreate("fin_tmr",
-                                      pdMS_TO_TICKS(3000),
-                                      pdFALSE,          /* 单次模式 */
-                                      NULL,
-                                      finish_timer_callback);
-    }
-    if (s_finish_timer) {
-        xTimerReset(s_finish_timer, 0);
-        printf("[COOK_UI] CMD: FINISH (timer 3s -> IDLE)\r\n");
-    } else {
-        printf("[COOK_UI] CMD: FINISH (no timer!)\r\n");
-    }
+    printf("[COOK_UI] CMD: FINISH -> done scene (wait C1)\r\n");
+}
+
+/**
+ * @brief C1指令 → 显示归位界面 (bg_reset.jpg), 不播报语音
+ */
+void cook_cmd_c1(void)
+{
+    cooking_stop_blink();
+    cook_stop_pour_loop(BOX_COUNT);
+    if (s_alarm_loop_active) cook_alarm_stop();
+
+    g_cook_status->sys_state = SYS_COOKING;
+    g_cook_status->sys_changed = 1;
+    cook_set_bg_scene(5);       /* bg_reset.jpg */
+
+    printf("[COOK_UI] CMD: C1 -> reset scene (no voice)\r\n");
 }
 
 /**
@@ -903,6 +1099,8 @@ void cook_cmd_alarm_fire(void)
  */
 void cook_cmd_idle(void)
 {
+    /* 停止炒菜闪烁 */
+    cooking_stop_blink();
     /* 停止所有菜盒的倒菜闪烁动画 */
     cook_stop_pour_loop(BOX_COUNT);
 

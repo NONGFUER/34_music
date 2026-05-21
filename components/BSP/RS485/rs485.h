@@ -41,16 +41,18 @@
 /* 帧格式: [1字节指令], 无CRC, 无从机地址, 无帧尾                    */
 /* 应答: 收到有效指令后回复 "OK\r\n"                                   */
 
-/* ---- A组: 触发命令 (0xA1 ~ 0xAA) ---- */
+/* ---- A组: 触发命令 (0xA1 ~ 0xA9) ---- */
 #define CMD_BOOT           0xA1    /* 开机 */
 #define CMD_POUR_BOX1      0xA3    /* 倒一号菜 */
 #define CMD_POUR_BOX2      0xA4    /* 倒二号菜 */
 #define CMD_POUR_BOX3      0xA5    /* 倒三号菜 */
-#define CMD_BOX_RETURN     0xA6    /* 归位(用三号归位图) */
-#define CMD_START_COOK     0xA7    /* 开始炒菜 */
-#define CMD_FINISH         0xA8    /* 炒菜完成 */
-#define CMD_ALARM_TEMP     0xA9    /* 温度异常(循环) */
-#define CMD_ALARM_FIRE     0xAA    /* 火警(循环) */
+#define CMD_START_COOK     0xA6    /* 开始炒菜 */
+#define CMD_FINISH         0xA7    /* 炒菜完成 */
+#define CMD_ALARM_TEMP     0xA8    /* 温度异常(循环) */
+#define CMD_ALARM_FIRE     0xA9    /* 火警(循环) */
+
+/* ---- C组: 控制命令 ---- */
+#define CMD_C1             0xC1    /* 显示归位界面(无语音) */
 
 /* ---- B组: 音量控制 (0xB0 ~ 0xB5, 共6档) ---- */
 #define CMD_VOLUME_MUTE    0xB0    /* 静音(0) */
