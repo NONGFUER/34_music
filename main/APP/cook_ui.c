@@ -10,7 +10,7 @@
  * @note        方案B实现:
  *              - 背景图(场景大图) + 代码绘制的菜盒状态图标叠加
  *              - 脏区检测优化: 仅重绘变化区域
- *              - MODBUS RTU 0x0201~0x0204 寄存器协议支持
+ *              - ASCII 指令协议支持 (A1~AC/B1~B2/C1~C3)
  *              - 动态布局: 坐标基于 lcddev.width/height 运行时计算
  ****************************************************************************************************
  */
@@ -591,7 +591,7 @@ void cook_cmd_reset(void)
 
 /**
  * @brief 菜盒归位(指定菜盒) + 显示对应归位完成界面
- * @param box_id  菜盒编号(1~3), 来自 REG_BOX_RETURN 的数据区值
+ * @param box_id  菜盒编号(1~3), 来自 A6/A7/A8 指令
  */
 void cook_cmd_box_return(uint8_t box_id)
 {
@@ -655,47 +655,41 @@ void cook_cmd_finish(void)
 }
 
 /**
- * @brief 温度异常 (激活循环播报)
+ * @brief 温度异常 (单次播报, 不循环)
  */
 void cook_cmd_alarm_temp(void)
 {
     g_cook_status->sys_state = SYS_ALARM_TEMP;
     g_cook_status->sys_changed = 1;
     cook_set_bg_scene(8);
-    s_alarm_loop_active = 1;
 
-    /* 仅在非播放状态下才首次立即播放(避免重复触发打断正在播的报警语音) */
-    if (g_audiodev.status != 0x03) {
-        rs485_target_index = VOICE_ALARM_TEMP;
-        rs485_cmd_flag     = 1;
-    }
+    /* 单次播放报警语音 */
+    rs485_target_index = VOICE_ALARM_TEMP;
+    rs485_cmd_flag     = 1;
 
     if (!s_alarm_task_handle) {
         xTaskCreate(cook_alarm_flash_task, "alarm_fl", 2048, NULL, 2, &s_alarm_task_handle);
     }
-    printf("[COOK_UI] CMD: ALARM TEMP (loop ON)\r\n");
+    printf("[COOK_UI] CMD: ALARM TEMP (once)\r\n");
 }
 
 /**
- * @brief 火警 (激活循环播报)
+ * @brief 火警 (单次播报, 不循环)
  */
 void cook_cmd_alarm_fire(void)
 {
     g_cook_status->sys_state = SYS_ALARM_FIRE;
     g_cook_status->sys_changed = 1;
     cook_set_bg_scene(9);
-    s_alarm_loop_active = 1;
 
-    /* 仅在非播放状态下才首次立即播放(避免重复触发打断正在播的报警语音) */
-    if (g_audiodev.status != 0x03) {
-        rs485_target_index = VOICE_ALARM_FIRE;
-        rs485_cmd_flag     = 1;
-    }
+    /* 单次播放报警语音 */
+    rs485_target_index = VOICE_ALARM_FIRE;
+    rs485_cmd_flag     = 1;
 
     if (!s_alarm_task_handle) {
         xTaskCreate(cook_alarm_flash_task, "alarm_fl", 2048, NULL, 2, &s_alarm_task_handle);
     }
-    printf("[COOK_UI] CMD: ALARM FIRE (loop ON)\r\n");
+    printf("[COOK_UI] CMD: ALARM FIRE (once)\r\n");
 }
 
 /**

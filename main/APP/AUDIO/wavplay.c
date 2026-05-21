@@ -45,6 +45,9 @@ void music(void *pvParameters);             /* 音乐任务函数声明 */
 /* 外部ADC句柄(main.c初始化, 用于电位器音量控制) */
 extern adc_oneshot_unit_handle_t adc1_handle;
 
+/* 外部全局静音标志(main.c 中 B0/B1~B5 设置) */
+extern uint8_t g_mute_flag;
+
 /* ================================================================== */
 /*                         全局状态变量                                */
 /* ================================================================== */
@@ -228,19 +231,19 @@ void music(void *pvParameters)
     }
     vTaskDelay(pdMS_TO_TICKS(10));                    /* 短暂等待DMA pipeline稳定 */
 
-    /* ===== 第3步: 解除静音，并做一个极快(20-30ms)的音量淡入===== */
-   
-    es8388_soft_mute(0);                              /* 同步解除软静音 */
-   
+    /* ===== 第3步: 解除静音+淡入 (静音状态时跳过) ===== */
+    if (!g_mute_flag) {
+        es8388_soft_mute(0);                              /* 同步解除软静音 */
 
-    /* ===== 第4步: 功放控制 ===== */
-    /* 注意: SPK_EN_IO 和 output_cfg 已在系统初始化时全局配置, 此处不再操作 */
-    uint8_t target_vol = audio_get_last_volume();
-    for(int v = 0; v <= target_vol; v += 3) {
-        es8388_hpvol_set(v);
-        vTaskDelay(pdMS_TO_TICKS(2)); // 每2ms增加一点音量
-    }
-    es8388_hpvol_set(target_vol); 
+        uint8_t target_vol = audio_get_last_volume();
+        for(int v = 0; v <= target_vol; v += 3) {
+            es8388_hpvol_set(v);
+            vTaskDelay(pdMS_TO_TICKS(2)); // 每2ms增加一点音量
+        }
+        es8388_hpvol_set(target_vol);
+    } else {
+        es8388_hpvol_set(0);  /* 静音状态: 保持硬件音量为0 */
+    } 
 
     /* ===== 阶段4: 主播放循环 ===== */
     bool fade_in_done = false;
@@ -301,7 +304,7 @@ void music(void *pvParameters)
                     }
 
                     f_lseek(g_audiodev.file, file_read_pos);
-                    {
+                    if (!g_mute_flag) {
                         uint8_t target = audio_get_last_volume();
                         for(int v = 0; v <= target; v += 3) {
                             es8388_hpvol_set(v);
