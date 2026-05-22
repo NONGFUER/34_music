@@ -11,7 +11,7 @@
     "idf.openOcdConfigs": [
         "board/esp32p4-builtin.cfg"
     ],
-    "idf.portWin": "COM14",
+    "idf.portWin": "COM20",
     "idf.pythonBinPathWin": "d:\\Soft_APP\\Espressif\\tools\\python_env\\idf5.4_py3.11_env\\Scripts\\python.exe",
     "idf.toolsPathWin": "d:\\ESP_IDF\\Espressif\\tools",
     "files.associations": {

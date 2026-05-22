@@ -231,16 +231,22 @@ void music(void *pvParameters)
     }
     vTaskDelay(pdMS_TO_TICKS(10));                    /* 短暂等待DMA pipeline稳定 */
 
-    /* ===== 第3步: 解除静音+淡入 (静音状态时跳过) ===== */
-    if (!g_mute_flag) {
+    /* ===== 第3步: 解除静音+淡入 (静音状态时跳过; ★报警强制满音量时覆盖) ===== */
+    if (!g_mute_flag || cook_is_alarm_force_vol()) {
         es8388_soft_mute(0);                              /* 同步解除软静音 */
 
-        uint8_t target_vol = audio_get_last_volume();
-        for(int v = 0; v <= target_vol; v += 3) {
-            es8388_hpvol_set(v);
-            vTaskDelay(pdMS_TO_TICKS(2)); // 每2ms增加一点音量
+        if (cook_is_alarm_force_vol()) {
+            /* ★ 报警模式: 直接设最大音量(不淡入) ★ */
+            es8388_hpvol_set(33);
+            es8388_spkvol_set(33);
+        } else {
+            uint8_t target_vol = audio_get_last_volume();
+            for(int v = 0; v <= target_vol; v += 3) {
+                es8388_hpvol_set(v);
+                vTaskDelay(pdMS_TO_TICKS(2)); // 每2ms增加一点音量
+            }
+            es8388_hpvol_set(target_vol);
         }
-        es8388_hpvol_set(target_vol);
     } else {
         es8388_hpvol_set(0);  /* 静音状态: 保持硬件音量为0 */
     } 

@@ -39,6 +39,9 @@ static TaskHandle_t s_alarm_task_handle = NULL;
 /** 报警循环播报标志 (温度异常/火警激活后置1, cook_cmd_idle清0) */
 static volatile uint8_t  s_alarm_loop_active  = 0;
 
+/** ★ 报警强制最大音量标志: 火警/报警时置1, wavplay播放器忽略g_mute_flag强制满音量 ★ */
+static volatile uint8_t  s_alarm_force_vol    = 0;
+
 /** 炒菜完成3秒定时器句柄 (到期自动跳转待机) */
 static TimerHandle_t     s_finish_timer       = NULL;
 
@@ -1126,6 +1129,7 @@ void cook_cmd_boot(void)
     alarm_stop_blink();
     cook_stop_pour_loop(BOX_COUNT);
     if (s_alarm_loop_active) cook_alarm_stop();
+    s_alarm_force_vol = 0;       /* ★ 清除强制最大音量 */
 
     g_cook_status->sys_state = SYS_IDLE;
     g_cook_status->sys_changed = 1;
@@ -1277,6 +1281,7 @@ void cook_cmd_c1(void)
     alarm_stop_blink();
     cook_stop_pour_loop(BOX_COUNT);
     if (s_alarm_loop_active) cook_alarm_stop();
+    s_alarm_force_vol = 0;       /* ★ 清除强制最大音量 */
 
     g_cook_status->sys_state = SYS_IDLE;
     g_cook_status->sys_changed = 1;
@@ -1302,6 +1307,13 @@ void cook_cmd_alarm_temp(void)
     rs485_target_index = VOICE_ALARM_TEMP;
     rs485_cmd_flag     = 1;
 
+    /* ★ 强制最大音量: 温度报警同样覆盖静音 ★ */
+    s_alarm_force_vol = 1;
+    extern uint8_t g_mute_flag;
+    es8388_soft_mute(0);
+    es8388_hpvol_set(33);
+    es8388_spkvol_set(33);
+
     if (!s_alarm_task_handle) {
         xTaskCreate(cook_alarm_flash_task, "alarm_fl", 2048, NULL, 2, &s_alarm_task_handle);
     }
@@ -1315,7 +1327,7 @@ void cook_cmd_alarm_temp(void)
 }
 
 /**
- * @brief 火警
+ * @brief 火警 — ★ 强制最大音量, 覆盖静音状态 ★
  */
 void cook_cmd_alarm_fire(void)
 {
@@ -1330,6 +1342,14 @@ void cook_cmd_alarm_fire(void)
 
     rs485_target_index = VOICE_ALARM_FIRE;
     rs485_cmd_flag     = 1;
+
+    /* ★ 强制最大音量: 无论是否静音, 火警必须满音量播报 ★ */
+    s_alarm_force_vol = 1;
+    extern uint8_t g_mute_flag;
+    es8388_soft_mute(0);               /* 解除软静音 */
+    es8388_hpvol_set(33);              /* ★ 硬件最大音量 */
+    es8388_spkvol_set(33);
+    printf("[COOK_UI] CMD: ALARM FIRE -> FORCE MAX VOLUME (override mute)\r\n");
 
     if (!s_alarm_task_handle) {
         xTaskCreate(cook_alarm_flash_task, "alarm_fl", 2048, NULL, 2, &s_alarm_task_handle);
@@ -1352,6 +1372,8 @@ void cook_cmd_idle(void)
     cooking_stop_blink();
     alarm_stop_blink();
     cook_stop_pour_loop(BOX_COUNT);
+
+    s_alarm_force_vol = 0;       /* ★ 清除强制最大音量 */
 
     /* 停止报警闪烁FreeRTOS任务 */
     if (s_alarm_task_handle) {
@@ -1404,6 +1426,15 @@ uint8_t cook_alarm_voice_index(void)
     if (g_cook_status->sys_state == SYS_ALARM_TEMP) return VOICE_ALARM_TEMP;
     if (g_cook_status->sys_state == SYS_ALARM_FIRE) return VOICE_ALARM_FIRE;
     return 0;
+}
+
+/**
+ * @brief 查询报警是否强制最大音量(忽略静音)
+ * @return 1=火警/报警中强制满音量, 0=正常模式
+ */
+uint8_t cook_is_alarm_force_vol(void)
+{
+    return s_alarm_force_vol;
 }
 
 /**

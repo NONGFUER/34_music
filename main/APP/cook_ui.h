@@ -161,6 +161,7 @@ void cook_cmd_stop_voice(void);                        /* 停止播报(停语音
 void cook_alarm_stop(void);                            /* 停止报警循环 */
 uint8_t  cook_is_alarm_loop(void);                     /* 查询报警循环是否激活 */
 uint8_t  cook_alarm_voice_index(void);                 /* 获取当前报警语音编号 */
+uint8_t  cook_is_alarm_force_vol(void);                /* 查询报警是否强制最大音量(忽略静音) */
 
 void cook_alarm_flash_task(void *arg);
 
