@@ -86,7 +86,7 @@ static alarm_blink_state_t s_alarm_blink;
 
 /* ===== 倒菜闪烁动画 (3个菜盒共用框架) ===== */
 #define POUR_BLINK_INTERVAL_MS  500   /* 闪烁间隔(毫秒) */
-#define POUR_BLINK_TIMEOUT_MS   7000  /* 闪烁持续时间(毫秒), 到后自动切换到done图 */
+#define POUR_BLINK_TIMEOUT_MS   8000  /* 闪烁持续时间(毫秒), 到后自动切换到done图 */
 
 /**
  * @brief 单个菜盒的倒菜闪烁状态 (预加载帧缓冲 + 定时器)
@@ -1261,26 +1261,15 @@ void cook_cmd_finish(void)
 
     g_cook_status->sys_state = SYS_DONE;
     g_cook_status->sys_changed = 1;
-    cook_set_bg_scene(7);      /* 完成界面 bg_done.jpg */
+    cook_set_bg_scene(7);      /* 完成界面 bg_done.jpg (停留不跳转) */
     rs485_target_index = VOICE_FINISH;
     rs485_cmd_flag     = 1;
 
-    /* 启动2秒定时器, 到期自动切到bg_standby待机界面 */
-    if (s_finish_timer == NULL) {
-        s_finish_timer = xTimerCreate("finish_to",
-                        pdMS_TO_TICKS(FINISH_TO_STANDBY_MS),
-                        pdFALSE,
-                        NULL,
-                        finish_timer_callback);
-    }
-    if (s_finish_timer) {
-        xTimerReset(s_finish_timer, 0);
-        printf("[COOK_UI] CMD: FINISH -> done scene (auto standby in 2000ms)\r\n");
-    }
+    printf("[COOK_UI] CMD: FINISH -> done scene (stay)\r\n");
 }
 
 /**
- * @brief C1指令 → 显示归位界面 (bg_reset.jpg), 不播报语音
+ * @brief C1指令 → 出菜归位后回到待机界面(bg_standby), 不播报语音
  */
 void cook_cmd_c1(void)
 {
@@ -1289,11 +1278,11 @@ void cook_cmd_c1(void)
     cook_stop_pour_loop(BOX_COUNT);
     if (s_alarm_loop_active) cook_alarm_stop();
 
-    g_cook_status->sys_state = SYS_COOKING;
+    g_cook_status->sys_state = SYS_IDLE;
     g_cook_status->sys_changed = 1;
-    cook_set_bg_scene(5);       /* bg_reset.jpg */
+    cook_set_bg_scene(1);       /* ★ 改为bg_standby.jpg 待机界面 */
 
-    printf("[COOK_UI] CMD: C1 -> reset scene (no voice)\r\n");
+    printf("[COOK_UI] CMD: C1 -> standby scene (no voice)\r\n");
 }
 
 /**
