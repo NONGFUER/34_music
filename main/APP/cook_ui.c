@@ -86,6 +86,7 @@ static alarm_blink_state_t s_alarm_blink;
 
 /* ===== 倒菜闪烁动画 (3个菜盒共用框架) ===== */
 #define POUR_BLINK_INTERVAL_MS  500   /* 闪烁间隔(毫秒) */
+#define POUR_BLINK_TIMEOUT_MS   7000  /* 闪烁持续时间(毫秒), 到后自动切换到done图 */
 
 /**
  * @brief 单个菜盒的倒菜闪烁状态 (预加载帧缓冲 + 定时器)
@@ -93,6 +94,7 @@ static alarm_blink_state_t s_alarm_blink;
  */
 typedef struct {
     TimerHandle_t     timer;          /* 周期定时器句柄 */
+    TimerHandle_t     timeout_timer;  /* 超时定时器句柄(7s后切done图) */
     volatile uint8_t  fire;           /* 回调置1, 主循环消费后清0 */
     uint8_t           show_null;      /* 当前显示哪张(0=有菜图, 1=空盘图) */
     volatile uint8_t  pending;        /* 等待音频播完才开闪 */
@@ -237,6 +239,35 @@ static void pour_blink_callback(TimerHandle_t xTimer)
     }
 }
 
+/**
+ * @brief 倒菜闪烁7秒超时回调 — 停止闪烁 + 切换到对应done背景图
+ * @note  scene映射: pour1→10, pour2→11, pour3→12
+ */
+static void pour_blink_timeout_callback(TimerHandle_t xTimer)
+{
+    uint8_t idx = (uint8_t)(size_t)pvTimerGetTimerID(xTimer);
+    if (idx >= BOX_COUNT) return;
+
+    printf("[POUR-BLINK] Pour%d 7s timeout -> stop blink, show done\r\n", idx + 1);
+
+    pour_blink_state_t *s = &s_pour_blink[idx];
+
+    /* ★ 同步停止闪烁周期定时器(等Timer Service Task真正处理完再往下走) */
+    if (s->timer) {
+        xTimerStop(s->timer, pdMS_TO_TICKS(100));
+    }
+    s->fire = 0;
+
+    /* 释放预加载帧缓冲 */
+    if (s->frame_buf) { free(s->frame_buf); s->frame_buf = NULL; }
+    if (s->null_buf)  { free(s->null_buf);  s->null_buf  = NULL; }
+    s->frame_w = 0;
+    s->frame_h = 0;
+
+    /* 切换到对应的归位完成场景 (pour1→10, pour2→11, pour3→12) */
+    cook_set_bg_scene(10 + idx);
+}
+
 /* ================================================================== */
 /*           倒菜闪烁帧预加载 (SD卡 → PSRAM, 仅一次)                    */
 /*   ★ 必须在 cook_start/stop 之前定义 (static函数)                     */
@@ -305,7 +336,7 @@ static void cook_start_pour_loop(uint8_t idx)
     pour_blink_state_t *s = &s_pour_blink[idx];
 
     if (s->timer != NULL) {
-        xTimerStop(s->timer, 0);
+        xTimerStop(s->timer, pdMS_TO_TICKS(100));       /* ★ 同步停止(复用前先确保停稳) */
     } else {
         char name[16];
         snprintf(name, sizeof(name), "p%dblink", idx + 1);
@@ -320,8 +351,26 @@ static void cook_start_pour_loop(uint8_t idx)
         s->show_null = 0;
         s->fire      = 0;
         xTimerReset(s->timer, 0);
+
+        /* 创建/复用超时定时器 (7秒后自动切done图) */
+        if (s->timeout_timer != NULL) {
+            xTimerStop(s->timeout_timer, pdMS_TO_TICKS(100));  /* 已有则先停 */
+        } else {
+            char tname[20];
+            snprintf(tname, sizeof(tname), "p%dto", idx + 1);
+            s->timeout_timer = xTimerCreate(tname,
+                                    pdMS_TO_TICKS(POUR_BLINK_TIMEOUT_MS),
+                                    pdFALSE,                  /* 一次性定时器 */
+                                    (void *)(size_t)idx,
+                                    pour_blink_timeout_callback);
+        }
+        if (s->timeout_timer) {
+            xTimerReset(s->timeout_timer, 0);
+        }
+
         cook_preload_blink_frames(idx);
-        printf("[BLINK] Pour%d blink STARTED\r\n", idx + 1);
+        printf("[BLINK] Pour%d blink STARTED (500ms interval, %dms timeout)\r\n",
+               idx + 1, POUR_BLINK_TIMEOUT_MS);
     }
 }
 
@@ -336,7 +385,10 @@ static void cook_stop_pour_loop(uint8_t idx)
 
         pour_blink_state_t *s = &s_pour_blink[i];
         if (s->timer != NULL) {
-            xTimerStop(s->timer, 0);  /* 不删除定时器句柄(复用) */
+            xTimerStop(s->timer, pdMS_TO_TICKS(100));      /* ★ 同步停止 */
+        }
+        if (s->timeout_timer != NULL) {
+            xTimerStop(s->timeout_timer, pdMS_TO_TICKS(100)); /* ★ 同步停止 */
         }
         s->fire    = 0;
         s->pending = 0;
@@ -373,7 +425,7 @@ static void cooking_timeout_callback(TimerHandle_t xTimer)
 
     /* 停闪烁定时器 */
     if (s_cook_blink.blink_timer) {
-        xTimerStop(s_cook_blink.blink_timer, 0);
+        xTimerStop(s_cook_blink.blink_timer, pdMS_TO_TICKS(100));   /* ★ 同步停止 */
     }
     s_cook_blink.fire = 0;
 
@@ -437,7 +489,7 @@ static void cooking_start_blink(void)
 {
     /* 先清理残留状态 */
     if (s_cook_blink.blink_timer) {
-        xTimerStop(s_cook_blink.blink_timer, 0);
+        xTimerStop(s_cook_blink.blink_timer, pdMS_TO_TICKS(100));     /* ★ 同步停止 */
     } else {
         s_cook_blink.blink_timer = xTimerCreate("cook_blink",
                                 pdMS_TO_TICKS(COOKING_BLINK_INTERVAL_MS),
@@ -447,7 +499,7 @@ static void cooking_start_blink(void)
     }
 
     if (s_cook_blink.timeout_timer) {
-        xTimerStop(s_cook_blink.timeout_timer, 0);
+        xTimerStop(s_cook_blink.timeout_timer, pdMS_TO_TICKS(100)); /* ★ 同步停止 */
     } else {
         s_cook_blink.timeout_timer = xTimerCreate("cook_to",
                                 pdMS_TO_TICKS(COOKING_BLINK_TIMEOUT_MS),
@@ -472,10 +524,10 @@ static void cooking_start_blink(void)
 static void cooking_stop_blink(void)
 {
     if (s_cook_blink.blink_timer) {
-        xTimerStop(s_cook_blink.blink_timer, 0);
+        xTimerStop(s_cook_blink.blink_timer, pdMS_TO_TICKS(100));       /* ★ 同步停止 */
     }
     if (s_cook_blink.timeout_timer) {
-        xTimerStop(s_cook_blink.timeout_timer, 0);
+        xTimerStop(s_cook_blink.timeout_timer, pdMS_TO_TICKS(100));   /* ★ 同步停止 */
     }
     s_cook_blink.fire = 0;
 
@@ -552,7 +604,7 @@ static void alarm_start_blink(const char *main_file, const char *null_file)
 {
     /* 先停旧的 */
     if (s_alarm_blink.timer) {
-        xTimerStop(s_alarm_blink.timer, 0);
+        xTimerStop(s_alarm_blink.timer, pdMS_TO_TICKS(100));      /* ★ 同步停止 */
     } else {
         s_alarm_blink.timer = xTimerCreate("alarm_blnk",
                                 pdMS_TO_TICKS(ALARM_BLINK_INTERVAL_MS),
@@ -584,7 +636,7 @@ static void alarm_start_blink(const char *main_file, const char *null_file)
 static void alarm_stop_blink(void)
 {
     if (s_alarm_blink.timer) {
-        xTimerStop(s_alarm_blink.timer, 0);
+        xTimerStop(s_alarm_blink.timer, pdMS_TO_TICKS(100));     /* ★ 同步停止 */
     }
     s_alarm_blink.fire     = 0;
     s_alarm_blink.pending  = 0;
@@ -1069,6 +1121,12 @@ static void finish_timer_callback(TimerHandle_t xTimer)
  */
 void cook_cmd_boot(void)
 {
+    /* ★ 停止所有闪烁(炒菜/报警/倒菜) + 报警循环 — 开机必须清一切状态 ★ */
+    cooking_stop_blink();
+    alarm_stop_blink();
+    cook_stop_pour_loop(BOX_COUNT);
+    if (s_alarm_loop_active) cook_alarm_stop();
+
     g_cook_status->sys_state = SYS_IDLE;
     g_cook_status->sys_changed = 1;
     cook_set_bg_scene(1);    /* 待机界面 */
@@ -1091,7 +1149,9 @@ void cook_cmd_pour_box(uint8_t box_id)
 {
     if (box_id < 1 || box_id > BOX_COUNT) return;
 
-    /* 停止报警循环(任何操作都中断报警) */
+    /* ★ 停止所有闪烁(炒菜/报警) + 报警循环 — 倒菜必须打断一切 ★ */
+    cooking_stop_blink();
+    alarm_stop_blink();
     if (s_alarm_loop_active) cook_alarm_stop();
 
     cook_set_box(box_id, BOX_POURING);
@@ -1241,6 +1301,11 @@ void cook_cmd_c1(void)
  */
 void cook_cmd_alarm_temp(void)
 {
+    /* ★ 停止所有闪烁(炒菜/报警/倒菜) — 报警必须打断一切 ★ */
+    cooking_stop_blink();
+    alarm_stop_blink();
+    cook_stop_pour_loop(BOX_COUNT);
+
     g_cook_status->sys_state = SYS_ALARM_TEMP;
     g_cook_status->sys_changed = 1;
     cook_set_bg_scene(8);
@@ -1265,6 +1330,11 @@ void cook_cmd_alarm_temp(void)
  */
 void cook_cmd_alarm_fire(void)
 {
+    /* ★ 停止所有闪烁(炒菜/报警/倒菜) — 火警必须打断一切 ★ */
+    cooking_stop_blink();
+    alarm_stop_blink();
+    cook_stop_pour_loop(BOX_COUNT);
+
     g_cook_status->sys_state = SYS_ALARM_FIRE;
     g_cook_status->sys_changed = 1;
     cook_set_bg_scene(9);
