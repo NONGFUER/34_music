@@ -5,7 +5,7 @@
  * @version     V2.0
  * @date        2025-01-01
  * @brief       WAV音频解码与播放引擎
- * @license     Copyright (c) 2020-2032, 广州市星翼电子科技有限公司
+ *  
  *
  * @note        V2.0优化内容:
  *              1. 精简music任务: 移除无用代码, 优化播放内循环结构

@@ -6,10 +6,10 @@ list(APPEND srcs    bmp.c
                     pngle.c
                     )
 
-idf_component_register(SRCS "${srcs}"
+idf_component_register(SRCS "bmp.c" "${srcs}"
                     INCLUDE_DIRS "."
                     REQUIRES BSP
                              MYFATFS
                              esp_driver_jpeg
                              fatfs
-                             )
+                             )  )
