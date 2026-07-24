@@ -6,4 +6,4 @@ idf_component_register(SRCS "text.c" "${srcs}"
                     REQUIRES esp_partition
                              spi_flash
                              fatfs
-                             BSP))
+                             BSP)

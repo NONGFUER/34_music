@@ -12,4 +12,4 @@ idf_component_register(SRCS "bmp.c" "${srcs}"
                              MYFATFS
                              esp_driver_jpeg
                              fatfs
-                             )  )
+                             )
